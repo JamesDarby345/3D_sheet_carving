@@ -17,6 +17,7 @@ from scipy import ndimage as ndi
 from helper import *
 import graph_tool.all as gt
 import plotly.graph_objects as go
+import time
 
 def find_boundary_vertices(edges, part):
     """
@@ -38,15 +39,17 @@ def find_boundary_vertices(edges, part):
     
     # Find edges that cross the partition border
     cross_partition = part[source_vertices] != part[target_vertices]
-    print(len(cross_partition))
+    print("edges that cross the partition:", len(cross_partition))
     
     # Get the boundary vertices
     boundary_vertices = np.unique(np.concatenate((source_vertices[cross_partition], target_vertices[cross_partition])))
-    print(len(boundary_vertices))
     
     # Filter to keep only the vertices that cross from the source set to the sink set
     # boundary_vertices = set(boundary_vertices[part[boundary_vertices]])
     # print(len(boundary_vertices))
+
+    boundary_vertices = boundary_vertices[part[boundary_vertices] == 0]
+    print("boundary vertices:", len(boundary_vertices))
     
     return set(boundary_vertices)
 
@@ -118,6 +121,30 @@ def boundary_vertices_to_array(boundary_vertices, shape, face):
 
     return boundary_array
 
+def seam_voxels_to_graph_indices(boundary):
+    """
+    Transforms a 3D array of seam voxels into a list of graph indices.
+    
+    Parameters:
+    boundary (np.ndarray): A 3D array where non-zero values specify the location of the selected seam voxels.
+    
+    Returns:
+    list: A list of vertex indices.
+    """
+    # Get the dimensions of the 3D array
+    z, y, x = boundary.shape
+    
+    # Function to convert 3D coordinates to 1D graph index
+    index = lambda i, j, k: i * y * x + j * x + k
+    
+    # Find the non-zero voxel coordinates
+    seam_voxel_coords = np.argwhere(boundary > 0)
+    
+    # Transform the coordinates to graph indices
+    vertex_indices = [index(i, j, k) for i, j, k in seam_voxel_coords]
+    
+    return vertex_indices
+
 # def visualize_min_cut(graph, boundary_vertices, cut_edges, src, tgt, output_filename):
 #     # Position nodes using a layout algorithm
 #     pos = gt.sfdp_layout(graph)
@@ -154,7 +181,7 @@ def boundary_vertices_to_array(boundary_vertices, shape, face):
 #                   output_size=(1000, 1000), output=output_filename, vertex_text=tdg.vertex_index, edge_text=weights, vertex_font_size=18)
 
 
-def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='back', large_weight=1e10):
+def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='back', large_weight=1e8):
     # Add source and sink nodes to the graph
     source = graph.add_vertex()
     sink = graph.add_vertex()
@@ -163,7 +190,7 @@ def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='bac
     if 'weight' in graph.edge_properties:
         weights = graph.edge_properties['weight']
     else:
-        weights = graph.new_edge_property("double")
+        weights = graph.new_edge_property("int")
 
     # Helper function to get vertex indices for a face
     def get_face_vertices(face):
@@ -201,16 +228,24 @@ def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='bac
 
     return graph, int(source), int(sink), weights
 
-def create_directed_energy_graph_from_mask(mask_data, direction='left', large_weight=1e10):
+def add_edge_with_weight(g, weight_prop, vertices, src_idx, tgt_idx, weight):
+    e = g.add_edge(vertices[src_idx], vertices[tgt_idx])
+    weight_prop[e] = weight
+
+# works only in 1 direction and is the slowest part of the code
+# but it works and has proven difficult to optimise or parallelise
+def create_directed_energy_graph_from_mask(mask_data, direction='left', large_weight=1e8):
     z,y,x = mask_data.shape  # Dimensions of the 3D mask array
     g = gt.Graph(directed=True)
-    weight_prop = g.new_edge_property("double")  # Edge property for weights
+    weight_prop = g.new_edge_property("int")  # Edge property for weights
 
     # Function to get linear index from 3D coordinates, assuming C-style row-major order
     index = lambda i, j, k: i * y * x + j * x + k
 
     # Add vertices
-    vertices = [g.add_vertex() for _ in range(z * y * x)]
+    num_vertices = z * y * x
+    g.add_vertex(num_vertices)
+    vertices = list(g.vertices())  # Get the list of vertices
 
     # Define neighbor offsets based on directionality
     # Source to sink propagation direction - positive axes directions
@@ -225,6 +260,7 @@ def create_directed_energy_graph_from_mask(mask_data, direction='left', large_we
 
     neighbors = directions[direction]
     print(x,y,z)
+    
     for i in range(z):
         for j in range(y):
             for k in range(x):
@@ -301,34 +337,28 @@ def create_directed_energy_graph_from_mask(mask_data, direction='left', large_we
     g.edge_properties["weight"] = weight_prop
     return g, weight_prop
 
+def reduce_array(data, block_size=(2, 2, 2), method='mean'):
+    # Ensure that the dimensions are divisible by the block size
+    assert data.shape[0] % block_size[0] == 0
+    assert data.shape[1] % block_size[1] == 0
+    assert data.shape[2] % block_size[2] == 0
 
-def reduce_array(data, block_size=(2, 2, 2), method='max'):
-    # Determine the new dimensions
+    # Reshape the array to create blocks
     z, y, x = data.shape
-    new_z, new_y, new_x = z // block_size[0], y // block_size[1], x // block_size[2]
+    new_shape = (z // block_size[0], block_size[0], 
+                 y // block_size[1], block_size[1], 
+                 x // block_size[2], block_size[2])
+    reshaped_data = data.reshape(new_shape)
 
-    # Initialize the reduced array
-    reduced_data = np.zeros((new_z, new_y, new_x), dtype=data.dtype)
-
-    # Iterate over the new grid dimensions
-    for i in range(new_z):
-        for j in range(new_y):
-            for k in range(new_x):
-                # Define the start and end indices for each block
-                start_z, end_z = i * block_size[0], (i + 1) * block_size[0]
-                start_y, end_y = j * block_size[1], (j + 1) * block_size[1]
-                start_x, end_x = k * block_size[2], (k + 1) * block_size[2]
-
-                # Extract the block and compute its maximum
-                block = data[start_z:end_z, start_y:end_y, start_x:end_x]
-                if method == 'max':
-                    reduced_data[i, j, k] = np.max(block)
-                elif method == 'min':
-                    reduced_data[i, j, k] = np.min(block)
-                elif method == 'mean':
-                    reduced_data[i, j, k] = np.mean(block)
-                else:
-                    raise ValueError('Unknown method: {}'.format(method))
+    # Apply the reduction method
+    if method == 'max':
+        reduced_data = reshaped_data.max(axis=(1, 3, 5))
+    elif method == 'min':
+        reduced_data = reshaped_data.min(axis=(1, 3, 5))
+    elif method == 'mean':
+        reduced_data = reshaped_data.mean(axis=(1, 3, 5)).astype(data.dtype)
+    else:
+        raise ValueError('Unknown method: {}'.format(method))
 
     return reduced_data
 

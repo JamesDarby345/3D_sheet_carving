@@ -19,6 +19,74 @@ import graph_tool.all as gt
 import plotly.graph_objects as go
 import time
 
+import concurrent.futures
+import time
+
+def update_edges_for_vertex_subset(graph, vertex_subset_indices, new_weight):
+    """
+    Updates the weights of all outgoing edges for a subset of vertices.
+    
+    Parameters:
+    graph (Graph): The graph object.
+    vertex_subset_indices (list): A subset of vertex indices whose outgoing edges need to be updated.
+    new_weight (float): The new weight value to be set for the outgoing edges.
+    
+    Returns:
+    list: A list of (source_index, target_index, new_weight) tuples to update in the main process.
+    """
+    updates = []
+    for v_index in vertex_subset_indices:
+        vertex = graph.vertex(v_index)
+        for edge in vertex.in_edges():
+            source_index = int(edge.source())
+            target_index = int(edge.target())
+            updates.append((source_index, target_index, new_weight))
+    return updates
+
+def update_outgoing_edges_p(graph, vertices, new_weight):
+    """
+    Updates the weights of all outgoing edges of the given vertices in a directed graph and returns the updated weights.
+    
+    Parameters:
+    graph (Graph): A directed graph from graph_tool.
+    vertices (list): A list of vertices whose outgoing edge weights need to be updated.
+    new_weight (float): The new weight value to be set for the outgoing edges.
+    
+    Returns:
+    PropertyMap: The updated edge weight property map.
+    """
+
+    # Ensure the graph has an edge weight property map
+    if 'weight' in graph.edge_properties:
+        weights = graph.edge_properties['weight']
+    else:
+        weights = graph.new_edge_property("int")
+        graph.edge_properties['weight'] = weights
+
+    # Determine the number of processes to use
+    num_processes = min(len(vertices), concurrent.futures.ProcessPoolExecutor()._max_workers)
+
+    # Split vertex indices into equal-sized chunks for each process
+    vertex_chunks = np.array_split(vertices, num_processes)
+
+    # Parallelize the edge update process using ProcessPoolExecutor
+    stime = time.time()
+    results = []
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [executor.submit(update_edges_for_vertex_subset, graph, chunk, new_weight) for chunk in vertex_chunks]
+        for future in concurrent.futures.as_completed(futures):
+            results.extend(future.result())
+    
+    # Update the weights in the main process
+    for source_index, target_index, weight in results:
+        edge = graph.edge(source_index, target_index)
+        weights[edge] = weight
+
+    print("Time taken to update weights: ", time.time() - stime)
+
+    return weights
+
+
 def find_boundary_vertices(edges, part):
     """
     Find vertices that cross the partition array border.
@@ -180,6 +248,63 @@ def seam_voxels_to_graph_indices(boundary):
 #                   vertex_size=vertex_size, edge_color=edge_color,
 #                   output_size=(1000, 1000), output=output_filename, vertex_text=tdg.vertex_index, edge_text=weights, vertex_font_size=18)
 
+def seam_voxels_to_graph_indices(boundary):
+    """
+    Transforms a 3D array of seam voxels into a list of graph indices.
+    
+    Parameters:
+    boundary (np.ndarray): A 3D array where non-zero values specify the location of the selected seam voxels.
+    
+    Returns:
+    list: A list of vertex indices.
+    """
+    # Get the dimensions of the 3D array
+    z, y, x = boundary.shape
+    
+    # Function to convert 3D coordinates to 1D graph index
+    index = lambda i, j, k: i * y * x + j * x + k
+    
+    # Find the non-zero voxel coordinates
+    seam_voxel_coords = np.argwhere(boundary > 0)
+    
+    # Transform the coordinates to graph indices
+    vertex_indices = [index(i, j, k) for i, j, k in seam_voxel_coords]
+    
+    return vertex_indices
+
+def update_outgoing_edges(graph, vertices, new_weight):
+    """
+    Updates the weights of all outgoing edges of the given vertices in a directed graph and returns the updated weights.
+    
+    Parameters:
+    graph (Graph): A directed graph from graph_tool.
+    vertices (list): A list of vertices whose outgoing edge weights need to be updated.
+    new_weight (float): The new weight value to be set for the outgoing edges.
+    
+    Returns:
+    PropertyMap: The updated edge weight property map.
+    """
+
+    # Ensure the graph has an edge weight property map
+    if 'weight' in graph.edge_properties:
+        weights = graph.edge_properties['weight']
+    else:
+        weights = graph.new_edge_property("int")
+        graph.edge_properties['weight'] = weights
+
+    # Convert the list of vertex indices to vertex objects
+    vertex_objects = [graph.vertex(v) for v in vertices]
+
+    stime = time.time()
+    # Update the weight of all outgoing edges for each vertex
+    for vertex in vertex_objects:
+        for edge in vertex.in_edges():
+            weights[edge] = new_weight
+    print("Time taken to update weights: ", time.time()-stime)
+    # Attach the updated weights to the graph
+    graph.edge_properties['weight'] = weights
+
+    return weights
 
 def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='back', large_weight=1e8):
     # Add source and sink nodes to the graph

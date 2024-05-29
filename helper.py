@@ -462,6 +462,19 @@ def create_directed_energy_graph_from_mask(mask_data, direction='left', large_we
     g.edge_properties["weight"] = weight_prop
     return g, weight_prop
 
+def create_graph(mask_data):
+    graph, _ = create_directed_energy_graph_from_mask(mask_data)
+    graph, src, sink, weights = add_directed_source_sink(graph, mask_data.shape[0], mask_data.shape[1], mask_data.shape[2])
+    src, sink = graph.vertex(src), graph.vertex(sink)
+    return graph, src, sink, weights
+
+def coarsen_image(image, levels):
+    images = [image]
+    for _ in range(levels):
+        image = ndi.zoom(image, 0.5, order=1)
+        images.append(image)
+    return images
+
 def reduce_array(data, block_size=(2, 2, 2), method='mean'):
     # Ensure that the dimensions are divisible by the block size
     assert data.shape[0] % block_size[0] == 0

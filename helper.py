@@ -86,6 +86,202 @@ def update_outgoing_edges_p(graph, vertices, new_weight):
 
     return weights
 
+def boundary_vertices_to_array_masked(boundary_vertices, shape, face, x_pos, y_pos, z_pos):
+    z_dim, y_dim, x_dim = shape
+    boundary_array = np.zeros(shape, dtype=np.int8)
+
+    #Compute the 3d coordinates from the x,y,z positions
+    for vertex in boundary_vertices:
+        x = x_pos[vertex]
+        y = y_pos[vertex]
+        z = z_pos[vertex]
+
+         # Check if indices are within the valid range
+        if 0 <= z < z_dim and 0 <= y < y_dim and 0 <= x < x_dim:
+            boundary_array[z, y, x] = 1  # Mark the boundary vertex in the array
+        else:
+            print(f"Index out of bounds: z={z}, y={y}, x={x}")
+
+    # Keep only the top-most value closest to the face in each column perpendicular to the face
+    if face == 'x':
+        for y in range(y_dim):
+            for z in range(z_dim):
+                found = False
+                for x in range(x_dim):
+                    if boundary_array[z, y, x] == 1:
+                        boundary_array[z, y, :x] = 0  # Set all values below to 0
+                        found = True
+                        # break
+                if not found:
+                    boundary_array[z, y, :] = 0  # No values found in this column
+
+    elif face == 'y':
+        for x in range(x_dim):
+            for z in range(z_dim):
+                found = False
+                for y in range(y_dim):
+                    if boundary_array[z, y, x] == 1:
+                        boundary_array[z, :y, x] = 0  # Set all values below to 0
+                        found = True
+                        # break
+                if not found:
+                    boundary_array[z, :, x] = 0  # No values found in this column
+
+    elif face == 'z':
+        for x in range(x_dim):
+            for y in range(y_dim):
+                found = False
+                for z in range(z_dim):
+                    if boundary_array[z, y, x] == 1:
+                        boundary_array[:z, y, x] = 0  # Set all values below to 0
+                        found = True
+                        # break
+                if not found:
+                    boundary_array[:, y, x] = 0  # No values found in this column
+
+    return boundary_array
+
+def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', large_weight=1e8):
+    z, y, x = mask_data.shape  # Dimensions of the 3D mask array
+    print(z, y, x)
+    g = gt.Graph(directed=True)
+    weight_prop = g.new_edge_property("int")  # Edge property for weights
+
+    # Create vertex properties for i, j, k positions
+    x_prop = g.new_vertex_property("int")
+    y_prop = g.new_vertex_property("int")
+    z_prop = g.new_vertex_property("int")
+
+    # Function to get linear index from 3D coordinates, assuming C-style row-major order
+    index = lambda i, j, k: i * y * x + j * x + k
+
+    # Create a mapping from mask coordinates to vertex indices
+    coord_to_vertex = {}
+
+    # Add vertices only for the non-zero elements in the mask
+    for i in range(z):
+        for j in range(y):
+            for k in range(x):
+                if mask_data[i, j, k] != -1:
+                    current_index = index(i, j, k)
+                    v = g.add_vertex()
+                    coord_to_vertex[(i, j, k)] = v
+                    x_prop[v]=k
+                    y_prop[v]=j
+                    z_prop[v]=i
+
+    # Define neighbor offsets based on directionality
+    directions = {
+        'left': [(0, 0, 1)],  # propagate right
+        'right': [(0, 0, -1)],  # propagate left
+        'top': [(0, 1, 0)],  # propagate downwards
+        'bottom': [(0, -1, 0)],  # propagate upwards
+        'front': [(1, 0, 0)],  # propagate back
+        'back': [(-1, 0, 0)]  # propagate front
+    }
+
+    neighbors = directions[direction]
+    
+    for (i, j, k), current_vertex in coord_to_vertex.items():
+        # Check each neighbor direction for valid connections
+        for di, dj, dk in neighbors:
+            ni, nj, nk = i + di, j + dj, k + dk
+            if (ni, nj, nk) in coord_to_vertex:
+                neighbor_vertex = coord_to_vertex[(ni, nj, nk)]
+                # Determine edge weight
+                weight = 10 if mask_data[ni, nj, nk] != 0 or mask_data[i, j, k] != 0 else 1
+                # Add edge and assign weight
+                e = g.add_edge(current_vertex, neighbor_vertex)  # forward edge with energy value
+                e2 = g.add_edge(neighbor_vertex, current_vertex)  # backward edge with large energy value
+                weight_prop[e] = weight
+                weight_prop[e2] = large_weight
+
+        # Add each diagonal backwards neighbor inf edge, i.e., x-1, y-1 and x-1, y+1 for YX plane
+        if (i, j-1, k-1) in coord_to_vertex:
+            neighbor_vertex = coord_to_vertex[(i, j-1, k-1)]
+            e = g.add_edge(current_vertex, neighbor_vertex)
+            weight_prop[e] = large_weight + 1
+        if (i, j+1, k-1) in coord_to_vertex:
+            neighbor_vertex = coord_to_vertex[(i, j+1, k-1)]
+            e = g.add_edge(current_vertex, neighbor_vertex)
+            weight_prop[e] = large_weight + 1
+
+        # Add each diagonal backwards neighbor inf edge for IK plane
+        if (i-1, j, k-1) in coord_to_vertex:
+            neighbor_vertex = coord_to_vertex[(i-1, j, k-1)]
+            e = g.add_edge(current_vertex, neighbor_vertex)
+            weight_prop[e] = large_weight + 1
+        if (i+1, j, k-1) in coord_to_vertex:
+            neighbor_vertex = coord_to_vertex[(i+1, j, k-1)]
+            e = g.add_edge(current_vertex, neighbor_vertex)
+            weight_prop[e] = large_weight + 1
+
+    # Add source and sink nodes
+    source = g.add_vertex()
+    sink = g.add_vertex()
+
+    # Helper function to get vertex indices for a face
+    def get_face_vertices(face, coord_to_vertex, z, y, x):
+        indices = []
+        if face == 'left':
+            for j in range(y):
+                for k in range(x):
+                    for i in range(z):
+                        if (i, j, k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(i, j, k)])
+                            break
+        elif face == 'right':
+            for j in range(y):
+                for k in range(x):
+                    for i in range (z):
+                        if (z-i, j, k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(z-i, j, k)])
+                            break
+        elif face == 'top':
+            for i in range(z):
+                for k in range(x):
+                    for j in range(y):
+                        if (i, j, k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(i, j, k)])
+                            break
+        elif face == 'bottom':
+            for i in range(z):
+                for k in range(x):
+                    for j in range(y):
+                        if (i, y-j, k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(i, y-j, k)])
+                            break
+        elif face == 'front':
+            for i in range(z):
+                for j in range(y):
+                    for k in range(x):
+                        if (i, j, k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(i, j, k)])
+                            break
+        elif face == 'back':
+            for i in range(z):
+                for j in range(y):
+                    for k in range(x):
+                        if (i, j, x-k) in coord_to_vertex:
+                            indices.append(coord_to_vertex[(i, j, x-k)])
+                            break
+        return indices
+
+    # Connect source to 'front' face
+    front_vertices = get_face_vertices('front', coord_to_vertex, z, y, x)
+    for v in front_vertices:
+        e = g.add_edge(source, v)
+        weight_prop[e] = large_weight
+
+    # Connect sink to 'back' face
+    back_vertices = get_face_vertices('back', coord_to_vertex, z, y, x)
+    for v in back_vertices:
+        e = g.add_edge(v, sink)
+        weight_prop[e] = large_weight
+
+    g.edge_properties["weight"] = weight_prop
+    return g, source, sink, weight_prop, x_prop, y_prop, z_prop
+
 
 def find_boundary_vertices(edges, part):
     """
@@ -356,6 +552,31 @@ def add_directed_source_sink(graph, z, y, x, source_face='front', sink_face='bac
 def add_edge_with_weight(g, weight_prop, vertices, src_idx, tgt_idx, weight):
     e = g.add_edge(vertices[src_idx], vertices[tgt_idx])
     weight_prop[e] = weight
+
+def upscale_and_dilate_3d(array, upscale_factor, dilation_amount):
+    """
+    Upscale a 3D array by a given factor and then dilate the result by a specified number of voxels.
+    
+    Parameters:
+        array (np.ndarray): The input 3D array.
+        upscale_factor (int): The factor by which to upscale the array.
+        dilation_amount (int): The number of voxels by which to dilate the array.
+        
+    Returns:
+        np.ndarray: The upscaled and dilated 3D array.
+    """
+    # Upscale the array
+    upscaled_shape = tuple(dim * upscale_factor for dim in array.shape)
+    upscaled_array = ndi.zoom(array, upscale_factor, order=1)
+    
+    # Apply dilation
+    if dilation_amount > 0:
+        structure = np.ones((dilation_amount*2+1, dilation_amount*2+1, dilation_amount*2+1))
+        dilated_array = ndi.binary_dilation(upscaled_array, structure=structure)
+    else:
+        dilated_array = upscaled_array
+
+    return dilated_array
 
 # works only in 1 direction and is the slowest part of the code
 # but it works and has proven difficult to optimise or parallelise

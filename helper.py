@@ -106,41 +106,40 @@ def boundary_vertices_to_array_masked(boundary_vertices, shape, face, x_pos, y_p
     if face == 'x':
         for y in range(y_dim):
             for z in range(z_dim):
-                found = False
-                for x in range(x_dim):
-                    if boundary_array[z, y, x] == 1:
-                        boundary_array[z, y, :x] = 0  # Set all values below to 0
-                        found = True
-                        # break
-                if not found:
-                    boundary_array[z, y, :] = 0  # No values found in this column
+                row = boundary_array[z, y, :]
+                if np.any(row == 1):
+                    first_one_index = np.argmax(row == 1)
+                    row[:first_one_index] = 0  # Set all values below to 0
+                    row[first_one_index+1:] = 0  # Set all values above to 0
+                else:
+                    row[:] = 0  # No values found in this row
+
 
     elif face == 'y':
         for x in range(x_dim):
             for z in range(z_dim):
-                found = False
-                for y in range(y_dim):
-                    if boundary_array[z, y, x] == 1:
-                        boundary_array[z, :y, x] = 0  # Set all values below to 0
-                        found = True
-                        # break
-                if not found:
-                    boundary_array[z, :, x] = 0  # No values found in this column
+                row = boundary_array[z, :, x]
+                if np.any(row == 1):
+                    first_one_index = np.argmax(row == 1)
+                    row[:first_one_index] = 0  # Set all values below to 0
+                    row[first_one_index+1:] = 0  # Set all values above to 0
+                else:
+                    row[:] = 0  # No values found in this row
 
     elif face == 'z':
         for x in range(x_dim):
             for y in range(y_dim):
-                found = False
-                for z in range(z_dim):
-                    if boundary_array[z, y, x] == 1:
-                        boundary_array[:z, y, x] = 0  # Set all values below to 0
-                        found = True
-                        # break
-                if not found:
-                    boundary_array[:, y, x] = 0  # No values found in this column
+                row = boundary_array[:, y, x]
+                if np.any(row == 1):
+                    first_one_index = np.argmax(row == 1)
+                    row[:first_one_index] = 0  # Set all values below to 0
+                    row[first_one_index+1:] = 0  # Set all values above to 0
+                else:
+                    row[:] = 0  # No values found in this row
 
     return boundary_array
 
+import time
 def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', large_weight=1e8):
     z, y, x = mask_data.shape  # Dimensions of the 3D mask array
     print(z, y, x)
@@ -159,16 +158,24 @@ def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', l
     coord_to_vertex = {}
 
     # Add vertices only for the non-zero elements in the mask
-    for i in range(z):
-        for j in range(y):
-            for k in range(x):
-                if mask_data[i, j, k] != -1:
-                    current_index = index(i, j, k)
-                    v = g.add_vertex()
-                    coord_to_vertex[(i, j, k)] = v
-                    x_prop[v]=k
-                    y_prop[v]=j
-                    z_prop[v]=i
+    stime = time.time()
+    # Find indices of non -1 elements using numpy vectorization
+    non_neg_indices = np.argwhere(mask_data != -1)
+
+    # Add all vertices at once
+    g.add_vertex(len(non_neg_indices))
+
+    # Create a mapping from mask coordinates to vertex indices
+    coord_to_vertex = {}
+    
+    # Assign vertices to coordinates and set properties
+    for idx, (i, j, k) in enumerate(non_neg_indices):
+        v = g.vertex(idx)
+        coord_to_vertex[(i, j, k)] = v
+        x_prop[v] = k
+        y_prop[v] = j
+        z_prop[v] = i
+    print("Time taken to add vertices to coord_to_vertex:", time.time()-stime)
 
     # Define neighbor offsets based on directionality
     directions = {
@@ -182,6 +189,11 @@ def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', l
 
     neighbors = directions[direction]
     
+    edges = []
+    weights = []
+
+    stime = time.time()
+
     for (i, j, k), current_vertex in coord_to_vertex.items():
         # Check each neighbor direction for valid connections
         for di, dj, dk in neighbors:
@@ -191,31 +203,41 @@ def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', l
                 # Determine edge weight
                 weight = 10 if mask_data[ni, nj, nk] != 0 or mask_data[i, j, k] != 0 else 1
                 # Add edge and assign weight
-                e = g.add_edge(current_vertex, neighbor_vertex)  # forward edge with energy value
-                e2 = g.add_edge(neighbor_vertex, current_vertex)  # backward edge with large energy value
-                weight_prop[e] = weight
-                weight_prop[e2] = large_weight
+                edges.append((int(current_vertex), int(neighbor_vertex)))  # forward edge with energy value
+                weights.append(weight)
+                edges.append((int(neighbor_vertex), int(current_vertex)))  # backward edge with large energy value
+                weights.append(int(large_weight))
 
         # Add each diagonal backwards neighbor inf edge, i.e., x-1, y-1 and x-1, y+1 for YX plane
         if (i, j-1, k-1) in coord_to_vertex:
             neighbor_vertex = coord_to_vertex[(i, j-1, k-1)]
-            e = g.add_edge(current_vertex, neighbor_vertex)
-            weight_prop[e] = large_weight + 1
+            edges.append((int(current_vertex), int(neighbor_vertex)))
+            weights.append(int(large_weight) + 1)
         if (i, j+1, k-1) in coord_to_vertex:
             neighbor_vertex = coord_to_vertex[(i, j+1, k-1)]
-            e = g.add_edge(current_vertex, neighbor_vertex)
-            weight_prop[e] = large_weight + 1
+            edges.append((int(current_vertex), int(neighbor_vertex)))
+            weights.append(int(large_weight) + 1)
 
         # Add each diagonal backwards neighbor inf edge for IK plane
         if (i-1, j, k-1) in coord_to_vertex:
             neighbor_vertex = coord_to_vertex[(i-1, j, k-1)]
-            e = g.add_edge(current_vertex, neighbor_vertex)
-            weight_prop[e] = large_weight + 1
+            edges.append((int(current_vertex), int(neighbor_vertex)))
+            weights.append(int(large_weight) + 1)
         if (i+1, j, k-1) in coord_to_vertex:
             neighbor_vertex = coord_to_vertex[(i+1, j, k-1)]
-            e = g.add_edge(current_vertex, neighbor_vertex)
-            weight_prop[e] = large_weight + 1
+            edges.append((int(current_vertex), int(neighbor_vertex)))
+            weights.append(int(large_weight) + 1)
 
+    # Convert edges and weights to numpy arrays
+    edges = np.array(edges, dtype=np.int32)
+    weights = np.array(weights, dtype=np.int32)
+
+    # Add edges to the graph using add_edge_list
+    g.add_edge_list(edges)
+    weight_prop.a = weights
+
+    print("Time taken to add edges to graph:", time.time()-stime)
+    stime = time.time()
     # Add source and sink nodes
     source = g.add_vertex()
     sink = g.add_vertex()
@@ -280,6 +302,7 @@ def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', l
         weight_prop[e] = large_weight
 
     g.edge_properties["weight"] = weight_prop
+    print("Time taken to add source and sink nodes:", time.time()-stime)
     return g, source, sink, weight_prop, x_prop, y_prop, z_prop
 
 

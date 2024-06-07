@@ -9,39 +9,8 @@ from helper import *
 import graph_tool.all as gt
 import plotly.graph_objects as go
 import time
-
-current_directory = os.getcwd()
-filename = "manual_2"
-label_path = f"{current_directory}/data/label/{filename}_label.nrrd"
-raw_data_path = f"{current_directory}/data/raw/{filename}_raw.nrrd"
-
-mask_data, mask_header = nrrd.read(label_path)
-raw_data, raw_header = nrrd.read(raw_data_path)
-
-#rotate the data and calculate reduced data representations
-#lists of the 3 rotations of the reduced mask and raw data
-reduced_mask_data_list = []
-reduced_raw_data_list = []
-
-reduced_mask_data_list.append(coarsen_image(mask_data, 3))
-reduced_raw_data_list.append(coarsen_image(raw_data, 3))
-
-k = 1 # number of times to rotate the array
-axis = 0 #0 for x, 1 for y and 2 for z
-mask_data_r = np.rot90(mask_data, k, axes=(axis, (axis+1)%3))
-raw_data_r = np.rot90(raw_data, k, axes=(axis, (axis+1)%3))
-
-reduced_mask_data_list.append(coarsen_image(mask_data_r, 3))
-reduced_raw_data_list.append(coarsen_image(raw_data_r, 3))
-
-axis = 1
-mask_data_r = np.rot90(mask_data, k, axes=(axis, (axis+1)%3))
-raw_data_r = np.rot90(raw_data, k, axes=(axis, (axis+1)%3))
-
-reduced_mask_data_list.append(coarsen_image(mask_data_r, 3))
-reduced_raw_data_list.append(coarsen_image(raw_data_r, 3))
-num_rotations = 3
-#index 0 of a list element is full res, each further index is 2x lower res, 256, 128, 64, 32
+import argparse
+from concurrent.futures import ProcessPoolExecutor
 
 # Helper functions that are annoying to move to a seperate file
 def calculate_seam_iter(directed_graph, src, tgt, weights, test_size, x_pos, y_pos, z_pos):
@@ -81,7 +50,7 @@ def multi_res_seam_calculation(mask_array_data, res_index=3, upscale_factor=2, d
     return boundary_array
 
 # Define the function to be executed in parallel
-def process_data(k, reduced_mask_data_list, reduced_raw_data_list, filename, num_seams_to_remove=120, res_index=3, save_interval=20):
+def process_data(k, reduced_mask_data_list, reduced_raw_data_list, filename, num_seams_to_remove=120, res_index=3, save_interval=20, num_rotations=3):
     print(f"Processing data for k={k}")
     mask_array_data = reduced_mask_data_list[k]
     raw_array_data = reduced_raw_data_list[k][0]
@@ -99,12 +68,50 @@ def process_data(k, reduced_mask_data_list, reduced_raw_data_list, filename, num
             # filename = f"output_{k}_{i}_{timestamp}.nrrd"
             save_nrrd(mask_array_data, raw_array_data, filename, i, k % num_rotations)
 
-# Parallel execution using ProcessPoolExecutor
-from concurrent.futures import ProcessPoolExecutor
-if __name__ == "__main__":
+def main(filename):
+    current_directory = os.getcwd()
+    filename = "manual_2"
+    label_path = f"{current_directory}/data/label/{filename}_label.nrrd"
+    raw_data_path = f"{current_directory}/data/raw/{filename}_raw.nrrd"
+
+    mask_data, _ = nrrd.read(label_path)
+    raw_data, _ = nrrd.read(raw_data_path)
+
+    #rotate the data and calculate reduced data representations
+    #lists of the 3 rotations of the reduced mask and raw data
+    reduced_mask_data_list = []
+    reduced_raw_data_list = []
+
+    reduced_mask_data_list.append(coarsen_image(mask_data, 3))
+    reduced_raw_data_list.append(coarsen_image(raw_data, 3))
+
+    k = 1 # number of times to rotate the array
+    axis = 0 #0 for x, 1 for y and 2 for z
+    mask_data_r = np.rot90(mask_data, k, axes=(axis, (axis+1)%3))
+    raw_data_r = np.rot90(raw_data, k, axes=(axis, (axis+1)%3))
+
+    reduced_mask_data_list.append(coarsen_image(mask_data_r, 3))
+    reduced_raw_data_list.append(coarsen_image(raw_data_r, 3))
+
+    axis = 1
+    mask_data_r = np.rot90(mask_data, k, axes=(axis, (axis+1)%3))
+    raw_data_r = np.rot90(raw_data, k, axes=(axis, (axis+1)%3))
+
+    reduced_mask_data_list.append(coarsen_image(mask_data_r, 3))
+    reduced_raw_data_list.append(coarsen_image(raw_data_r, 3))
+    num_rotations = 3
+    #index 0 of a list element is full res, each further index is 2x lower res, 256, 128, 64, 32
+
     with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(process_data, k, reduced_mask_data_list, reduced_raw_data_list, filename) for k in range(len(reduced_mask_data_list))]
+        futures = [executor.submit(process_data, k, reduced_mask_data_list, reduced_raw_data_list, filename, num_rotations=num_rotations) for k in range(len(reduced_mask_data_list))]
 
     # Wait for all futures to complete
     for future in futures:
         future.result()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Process a filename.')
+    parser.add_argument('filename', type=str, help='The base filename to process')
+    args = parser.parse_args()
+
+    main(args.filename)

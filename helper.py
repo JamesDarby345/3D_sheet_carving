@@ -22,12 +22,12 @@ def save_nrrd(mask_array_data, raw_array_data, filename, num_seams_removed, rot)
     output_dir = os.path.join(os.getcwd(), 'output/densified_cubes')
     os.makedirs(output_dir, exist_ok=True)
     # Save mask_array_data[0] as NRRD with a timestamp
-    mask_nrrd_path = os.path.join(output_dir, f'{filename}_{num_seams_removed}_{rot}_densified_label.nrrd')
+    mask_nrrd_path = os.path.join(output_dir, f'{filename}_iters_{num_seams_removed}_rot_{rot}_densified_label.nrrd')
     nrrd.write(mask_nrrd_path, mask_array_data[0])
     print(f"Saved mask_array_data[0] to {mask_nrrd_path}")
 
     # Save raw_array_data as NRRD with a timestamp
-    raw_nrrd_path = os.path.join(output_dir, f'{filename}_{num_seams_removed}_{rot}_densified_data.nrrd')
+    raw_nrrd_path = os.path.join(output_dir, f'{filename}_iters_{num_seams_removed}_rot_{rot}_densified_data.nrrd')
     nrrd.write(raw_nrrd_path, raw_array_data)
     print(f"Saved raw_array_data to {raw_nrrd_path}")
 

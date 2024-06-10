@@ -31,6 +31,40 @@ def save_nrrd(mask_array_data, raw_array_data, filename, num_seams_removed, rot)
     nrrd.write(raw_nrrd_path, raw_array_data)
     print(f"Saved raw_array_data to {raw_nrrd_path}")
 
+def erode_structures(mask_array, iterations=1):
+    unique_values = np.unique(mask_array)
+    unique_values = unique_values[unique_values > 0]  # Ignore background (assuming background is 0)
+    
+    eroded_array = np.zeros_like(mask_array)
+    
+    for value in unique_values:
+        structure_mask = mask_array == value
+        
+        # Erode the structure
+        eroded_structure = ndi.binary_erosion(structure_mask, iterations=iterations)
+        
+        # Add the eroded structure to the new array
+        eroded_array[eroded_structure] = value
+    
+    return eroded_array
+
+def dilate_structures(mask_array, iterations=1):
+    unique_values = np.unique(mask_array)
+    unique_values = unique_values[unique_values > 0]  # Ignore background (assuming background is 0)
+    
+    dilated_array = np.zeros_like(mask_array)
+    
+    for value in unique_values:
+        structure_mask = mask_array == value
+        
+        # Dilate the structure
+        dilated_structure = ndi.binary_dilation(structure_mask, iterations=iterations)
+        
+        # Add the dilated structure to the new array
+        dilated_array[dilated_structure] = value
+    
+    return dilated_array
+
 def boundary_vertices_to_array_masked(boundary_vertices, shape, face, x_pos, y_pos, z_pos):
     z_dim, y_dim, x_dim = shape
     boundary_array = np.zeros(shape, dtype=np.int8)

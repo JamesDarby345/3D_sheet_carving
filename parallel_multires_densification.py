@@ -58,7 +58,7 @@ def process_data(k, reduced_mask_data_list, reduced_raw_data_list, filename, num
         mask_array_data = coarsen_image(mask_array_data, res_index)
         boundary_arrays.append(boundary_array)
         print(f"Time taken to calculate and remove seam {i} for {filename} rot={k%num_rotations}:", time.time() - stime)
-        if i != 0 and (i % save_interval == 0 or i == 76):
+        if i != 0 and (i % save_interval == 0 or i == 76 or i == num_seams_to_remove - 1):
             save_nrrd(mask_array_data, raw_array_data, filename, i, k % num_rotations)
 
 def main(folder_name):
@@ -83,6 +83,7 @@ def main(folder_name):
         raw_path = os.path.join(raw_folder, f'{base}_raw.nrrd')
 
         mask_data, _ = nrrd.read(label_path)
+        # mask_data = erode_structures(mask_data, 1)
         raw_data, _ = nrrd.read(raw_path)
 
         # Rotate the data and calculate reduced data representations
@@ -97,7 +98,7 @@ def main(folder_name):
             reduced_raw_data_list.append(coarsen_image(raw_data_r, 3))
 
     num_rotations = 3 # Number of rotations that are performed
-    num_seams_to_remove = 120
+    num_seams_to_remove = 76
     save_interval = 20
     print(len(reduced_mask_data_list))
     print(filenames)

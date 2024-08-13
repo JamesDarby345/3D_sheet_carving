@@ -71,6 +71,7 @@ def boundary_vertices_to_array_masked(boundary_vertices, shape, face, x_pos, y_p
 
     #Compute the 3d coordinates from the x,y,z positions
     for vertex in boundary_vertices:
+        # print(vertex)
         x = x_pos[vertex]
         y = y_pos[vertex]
         z = z_pos[vertex]
@@ -171,8 +172,8 @@ def create_masked_directed_energy_graph_from_mask(mask_data, direction='left', l
             ni, nj, nk = i + di, j + dj, k + dk
             if (ni, nj, nk) in coord_to_vertex:
                 neighbor_vertex = coord_to_vertex[(ni, nj, nk)]
-                # Determine edge weight
-                weight = 10 if mask_data[ni, nj, nk] != 0 or mask_data[i, j, k] != 0 else 1
+                # Determine edge weight from distance map, larger mask value means smaller weight
+                weight = int(1000/(mask_data[i, j, k]+1+1e-8))
                 # Add edge and assign weight
                 edges.append((int(current_vertex), int(neighbor_vertex)))  # forward edge with energy value
                 weights.append(weight)
@@ -340,156 +341,3 @@ def coarsen_image(image, levels):
         image = ndi.zoom(image, 0.5, order=1)
         images.append(image)
     return images
-
-def remove_voxels(data_array, mask_array, boundary_array, num_voxels_to_remove=1, direction='x'):
-    """
-    Removes a specified number of voxels from each row in the given direction
-    based on a boundary mask array.
-    
-    Parameters:
-    data_array (np.ndarray): The original 3D array from which voxels are to be removed.
-    boundary_array (np.ndarray): The boundary mask 3D array specifying the voxels to be removed.
-    num_voxels_to_remove (int): Number of voxels to be removed from each row.
-    direction (str): The direction in which voxels are to be removed ('x', 'y', 'z').
-    
-    Returns:
-    np.ndarray: The resulting 3D array with the specified voxels removed.
-    """
-    assert data_array.shape == boundary_array.shape, f"Data array and boundary array must have the same shape. {data_array.shape} != {boundary_array.shape}"
-    assert mask_array.shape == boundary_array.shape, f"Mask array and boundary array must have the same shape. {mask_array.shape} != {boundary_array.shape}"
-    assert direction in ['x', 'y', 'z'], "Direction must be 'x', 'y', or 'z'."
-    
-    if direction == 'x':
-        new_shape = (data_array.shape[0], data_array.shape[1], data_array.shape[2] - num_voxels_to_remove)
-        result_data_array = np.zeros(new_shape, dtype=data_array.dtype)
-        result_mask_array = np.zeros(new_shape, dtype=mask_array.dtype)
-        for i in range(data_array.shape[0]):
-            for j in range(data_array.shape[1]):
-                data_row = data_array[i, j, :]
-                boundary_row = boundary_array[i, j, :]
-                keep_indices = np.where(boundary_row == 0)[0]
-                keep_indices = keep_indices[:new_shape[2]]  # Only keep up to the new size
-                result_data_array[i, j, :] = data_row[keep_indices][:new_shape[2]]
-                result_mask_array[i, j, :] = mask_array[i, j, keep_indices][:new_shape[2]]
-        
-        # Create padded arrays with -1
-        padded_data_array = -np.ones_like(data_array, dtype=data_array.dtype)
-        padded_mask_array = -np.ones_like(mask_array, dtype=mask_array.dtype)
-        
-        # Copy the result arrays into the padded arrays
-        padded_data_array[:, :, :new_shape[2]] = result_data_array
-        padded_mask_array[:, :, :new_shape[2]] = result_mask_array
-    
-    elif direction == 'y':
-        new_shape = (data_array.shape[0], data_array.shape[1] - num_voxels_to_remove, data_array.shape[2])
-        result_data_array = np.zeros(new_shape, dtype=data_array.dtype)
-        result_mask_array = np.zeros(new_shape, dtype=mask_array.dtype)
-        for i in range(data_array.shape[0]):
-            for k in range(data_array.shape[2]):
-                data_row = data_array[i, :, k]
-                boundary_row = boundary_array[i, :, k]
-                keep_indices = np.where(boundary_row == 0)[0]
-                keep_indices = keep_indices[:new_shape[1]]  # Only keep up to the new size
-                result_data_array[i, :, k] = data_row[keep_indices][:new_shape[1]]
-                result_mask_array[i, :, k] = mask_array[i, keep_indices, k][:new_shape[1]]
-        
-        # Create padded arrays with -1
-        padded_data_array = -np.ones_like(data_array, dtype=data_array.dtype)
-        padded_mask_array = -np.ones_like(mask_array, dtype=mask_array.dtype)
-        
-        # Copy the result arrays into the padded arrays
-        padded_data_array[:, :new_shape[1], :] = result_data_array
-        padded_mask_array[:, :new_shape[1], :] = result_mask_array
-    
-    elif direction == 'z':
-        new_shape = (data_array.shape[0] - num_voxels_to_remove, data_array.shape[1], data_array.shape[2])
-        result_data_array = np.zeros(new_shape, dtype=data_array.dtype)
-        result_mask_array = np.zeros(new_shape, dtype=mask_array.dtype)
-        for j in range(data_array.shape[1]):
-            for k in range(data_array.shape[2]):
-                data_row = data_array[:, j, k]
-                boundary_row = boundary_array[:, j, k]
-                keep_indices = np.where(boundary_row == 0)[0]
-                keep_indices = keep_indices[:new_shape[0]]  # Only keep up to the new size
-                result_data_array[:, j, k] = data_row[keep_indices][:new_shape[0]]
-                result_mask_array[:, j, k] = mask_array[keep_indices, j, k][:new_shape[0]]
-        
-        # Create padded arrays with -1
-        padded_data_array = -np.ones_like(data_array, dtype=data_array.dtype)
-        padded_mask_array = -np.ones_like(mask_array, dtype=mask_array.dtype)
-        
-        # Copy the result arrays into the padded arrays
-        padded_data_array[:new_shape[0], :, :] = result_data_array
-        padded_mask_array[:new_shape[0], :, :] = result_mask_array
-    
-    return padded_data_array, padded_mask_array
-
-def mark_boundaries_color(image, label_img, color=None, outline_color=None, mode='outer', background_label=0, dilation_size=1):
-    """Return image with boundaries between labeled regions highlighted with consistent colors derived from labels.
-
-    Parameters:
-    - image: Input image.
-    - label_img: Image with labeled regions.
-    - color: Ignored in this version.
-    - outline_color: If specified, use this color for the outline. Otherwise, use the same as boundary.
-    - mode: Choose 'inner', 'outer', or 'thick' to define boundary type.
-    - background_label: Label to be treated as the background.
-    - dilation_size: Size of the dilation square for the boundaries.
-
-    Returns:
-    - Image with boundaries highlighted.
-    """
-    # Ensure input image is in float and has three channels
-    float_dtype = np.float32  # Use float32 for efficiency
-    marked = img_as_float(image, force_copy=True).astype(float_dtype, copy=False)
-    if marked.ndim == 2:
-        marked = gray2rgb(marked)
-
-    # Create a color map normalized by the number of unique labels
-    unique_labels = np.unique(label_img)
-    color_map = plt.get_cmap('nipy_spectral')  # You can change 'nipy_spectral' to any other colormap
-
-    # Find boundaries and apply colors
-    boundaries = find_boundaries(label_img, mode=mode, background=background_label)
-    for label in unique_labels:
-        if label == background_label:
-            continue
-        # Normalize label value to the range of the colormap
-        normalized_color = color_map(label / np.max(unique_labels))[:3]  # Get RGB values only
-        label_boundaries = find_boundaries(label_img == label, mode=mode)
-        label_boundaries = dilation(label_boundaries, square(dilation_size))
-        marked[label_boundaries] = normalized_color
-        if outline_color is not None:
-            outlines = dilation(label_boundaries, square(dilation_size + 1))
-            marked[outlines] = outline_color
-        else:
-            marked[label_boundaries] = normalized_color
-
-    return marked
-
-def mark_boundaries_multicolor(image, label_img, color=None, outline_color=None, mode='outer', background_label=0, dilation_size=1):
-    """Return image with boundaries between labeled regions highlighted with consistent colors.
-
-    Parameters are the same as in the original function but color is ignored if provided.
-    """
-    # Ensure input image is in float and has three channels
-    float_dtype = np.float32  # Use float32 for efficiency
-    marked = img_as_float(image, force_copy=True).astype(float_dtype, copy=False)
-    if marked.ndim == 2:
-        marked = gray2rgb(marked)
-
-    # Generate consistent colors for each unique label in label_img
-    unique_labels = np.unique(label_img)
-    color_map = {label: consistent_color(label) for label in unique_labels if label != background_label}
-
-    # Find boundaries and apply colors
-    boundaries = find_boundaries(label_img, mode=mode, background=background_label)
-    for label, color in color_map.items():
-        label_boundaries = find_boundaries(label_img == label, mode=mode)
-        label_boundaries = dilation(label_boundaries, square(dilation_size))
-        if outline_color is not None:
-            outlines = dilation(label_boundaries, square(dilation_size))
-            marked[outlines] = outline_color
-        marked[label_boundaries] = color
-
-    return marked

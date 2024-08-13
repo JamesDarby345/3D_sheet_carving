@@ -1,13 +1,9 @@
 import nrrd
 import numpy as np
 import os
-import matplotlib.pyplot as plt
-from ipywidgets import interact, IntSlider
-from skimage.segmentation import mark_boundaries
 from scipy import ndimage as ndi
 from helper import *
 import graph_tool.all as gt
-import plotly.graph_objects as go
 import time
 import argparse
 from concurrent.futures import ProcessPoolExecutor

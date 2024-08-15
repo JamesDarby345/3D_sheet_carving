@@ -86,7 +86,7 @@ def main(folder_name):
         reduced_mask_data_list.append(coarsen_image(mask_data, 3))
         reduced_raw_data_list.append(coarsen_image(raw_data, 3))
 
-        k = 1 # Number of times to rotate the array
+        k = 1 # Number of times to rotate the array 90 deg
         for axis in [0, 1]:
             mask_data_r = np.rot90(mask_data, k, axes=(axis, (axis+1)%3))
             raw_data_r = np.rot90(raw_data, k, axes=(axis, (axis+1)%3))

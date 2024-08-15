@@ -81,119 +81,127 @@ def create_label_distance_map(labeled_array, max_workers=None):
     
     return output.astype(int)
 
-def filter_and_reassign_labels(label_data, cc_min_size):
+def process_label_with_roi(labeled_array, label, roi_array):
     """
-    Filter out small disconnected components within each label and reassign
-    remaining labels starting from 1 and incrementing by 1.
-
-    Parameters:
-    label_data (numpy.ndarray): Input label data
-    cc_min_size (int): Minimum size for a connected component to be kept
-
+    Compute the distance map for a specific label within a given ROI.
+    
+    Args:
+    labeled_array (numpy.ndarray): 3D array with labeled regions
+    label (int): The label to process
+    roi_array (numpy.ndarray): 3D array defining the ROI
+    
     Returns:
-    numpy.ndarray: Filtered and reassigned label data
+    numpy.ndarray: Distance map with positive values inside the label and negative values outside (within ROI)
     """
-    unique_labels = np.unique(label_data)
-    unique_labels = unique_labels[unique_labels != 0]  # Exclude background
+    # Create a binary mask for the current label
+    mask = (labeled_array == label)
+    
+    # Compute the distance transform within the label
+    pos_distance_map = ndimage.distance_transform_edt(mask)
+    
+    # Compute the distance transform outside the label (within ROI)
+    neg_distance_map = ndimage.distance_transform_edt(~mask)
+    
+    # Create the final distance map
+    distance_map = pos_distance_map - neg_distance_map
+    
+    # Apply the ROI mask
+    roi_mask = (roi_array != 0)
+    distance_map[~roi_mask] = 0
+    
+    return distance_map
 
-    new_label_data = np.zeros_like(label_data)
-    new_label = 1
-
-    for label in unique_labels:
-        label_mask = label_data == label
-        labeled_components, _ = ndimage.label(label_mask)
+def create_label_distance_map_with_roi(labeled_array, roi_array, max_workers=None):
+    """
+    Create a distance map for all labels in the labeled_array within the given ROI.
+    
+    Args:
+    labeled_array (numpy.ndarray): 3D array with labeled regions
+    roi_array (numpy.ndarray): 3D array defining the ROI
+    max_workers (int): Maximum number of worker threads
+    
+    Returns:
+    numpy.ndarray: Combined distance map for all labels
+    """
+    # Ensure labeled_array and roi_array have the same shape
+    assert labeled_array.shape == roi_array.shape, "labeled_array and roi_array must have the same shape"
+    
+    # Get unique labels, excluding background (assumed to be 0)
+    labels = np.unique(labeled_array)
+    labels = labels[labels != 0]
+    
+    # Create an output array with the same shape as the input
+    output = np.zeros_like(labeled_array, dtype=float)
+    
+    # Use ThreadPoolExecutor for parallelization
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit tasks for each label
+        future_to_label = {executor.submit(process_label_with_roi, labeled_array, label, roi_array): label for label in labels}
         
-        valid_component_mask = np.zeros_like(label_mask, dtype=bool)
-        
-        for component in range(1, labeled_components.max() + 1):
-            component_mask = labeled_components == component
-            if np.sum(component_mask) >= cc_min_size:
-                valid_component_mask |= component_mask
+        # Collect results as they complete
+        for future in concurrent.futures.as_completed(future_to_label):
+            label = future_to_label[future]
+            try:
+                distance_map = future.result()
+                # Add the distance map for this label to the output
+                output += distance_map
+            except Exception as exc:
+                print(f'Label {label} generated an exception: {exc}')
+    
+    return output
 
-        if np.any(valid_component_mask):
-            new_label_data[valid_component_mask] = new_label
-            new_label += 1
+def prepare_distance_map(distance_map, roi_mask, value_to_add=0):
+    #add value delta between the label and out of label distances
+    mask = (distance_map > 0)
+    distance_map[mask] += value_to_add
 
-    return new_label_data
-
-def apply_pca_thinning(data, label_value):
-    # Extract coordinates of the current structure
-    coords = np.column_stack(np.where(data == label_value))
-    
-    # Apply PCA
-    pca = PCA(n_components=3)
-    pca.fit(coords)
-    normal_vector = pca.components_[-1]  # The component with the least variance
-    
-    # Project points onto the normal vector
-    mean_center = pca.mean_
-    projections = np.dot((coords - mean_center), normal_vector)
-    
-    # Sort coordinates based on their projections
-    sorted_indices = np.argsort(projections)
-    sorted_coords = coords[sorted_indices]
-    
-    # Calculate the number of points to consider for front and back (e.g., 10% of total points)
-    n_points = len(coords)
-    n_edge_points = max(int(0.1 * n_points), 1)  # At least 1 point
-    
-    # Calculate average positions for front and back portions
-    front_avg = np.mean(sorted_coords[-n_edge_points:], axis=0)
-    back_avg = np.mean(sorted_coords[:n_edge_points], axis=0)
-    
-    # Calculate the midpoint between front and back averages
-    midpoint = (front_avg + back_avg) / 2
-    
-    # Project all points onto the plane passing through the midpoint
-    plane_projections = coords - np.dot((coords - midpoint), normal_vector)[:, np.newaxis] * normal_vector
-    
-    # Create a KD-tree for efficient nearest neighbor search
-    tree = cKDTree(plane_projections)
-    
-    # For each unique projected point, find the closest front and back points
-    unique_projections, unique_indices = np.unique(plane_projections, axis=0, return_index=True)
-    
-    midline_points = []
-    for proj in unique_projections:
-        # Find points in the original coords that project to this point (or very close to it)
-        _, idx = tree.query(proj, k=10)  # Get 10 nearest neighbors
-        nearby_original = coords[idx]
-        
-        # Calculate the front and back points for this projection
-        front_point = nearby_original[np.argmax(np.dot(nearby_original - proj, normal_vector))]
-        back_point = nearby_original[np.argmin(np.dot(nearby_original - proj, normal_vector))]
-        
-        # Calculate the midpoint
-        midpoint = (front_point + back_point) / 2
-        midline_points.append(midpoint)
-    
-    # Convert midline points to integer coordinates
-    midline_coords = np.round(midline_points).astype(int)
-    
-    # Ensure coordinates are within the bounds of the original data dimensions
-    midline_coords = np.clip(midline_coords, 0, np.array(data.shape) - 1)
-    
-    # Create a new array to store the thinned structure
-    thinned_structure = np.zeros_like(data, dtype=np.uint8)
-    thinned_structure[tuple(midline_coords.T)] = label_value
-    
-    return thinned_structure
+    #mask areas outside the roi and normalize the distance map
+    distance_map[roi_mask == -1] = -1
+    distance_map += abs(distance_map.min())+1
+    distance_map[roi_mask == -1] = -1
+    return distance_map
 
 def process_single_label(label_data, label_value, output_path):
     # Create a binary mask for the specified label
     mask = (label_data == label_value)
+    # nrrd.write('mask.nrrd', mask.astype(np.uint8))
+    
+    stime = time.time()
+    # distance_map = process_array_with_bounding_box(distance_map)
+    roi_mask = generate_volume_roi(mask, erode_dilate_iters=10)
+    nrrd.write('roi_mask.nrrd', roi_mask.astype(np.uint8))
+    print(f"Time taken to process ROI: {time.time() - stime:.2f} seconds")
 
     # Compute the distance map within the label
-    distance_map = create_label_distance_map(mask)
+    stime = time.time()
+    distance_map = create_label_distance_map_with_roi(mask, roi_mask)
+    print(f"Time taken to calculate distance map: {time.time() - stime:.2f} seconds")
 
-    # Mask out areas outside the label
+    
+
+    #Mask out areas outside the ROI, normalize the distance map and remask
+    distance_map = prepare_distance_map(distance_map, roi_mask, value_to_add=0)
+    print("0's in dist map (should be 0):", np.sum(distance_map == 0))
+
+    # # Mask out areas outside the label
     distance_map[~mask] = -1
+    nrrd.write('output/distance_map.nrrd', distance_map.astype(np.float32))
 
+    # distance_map = coarsen_image(distance_map, 1)
+  
     # Create the energy graph
-    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(distance_map)
+    stime = time.time()
+    weight_array = [-1]
+    # directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_6_connect(distance_map, weight_array=weight_array)
+    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask_non_monotonic(distance_map, weight_array=weight_array)
+    # directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(distance_map)
+    print(f"Time taken to create energy graph: {time.time() - stime:.2f} seconds")
 
     # Calculate the seam
+    stime = time.time()
     seam_array, flow = calculate_seam_iter(directed_graph, src, tgt, weights, distance_map.shape[0], x_pos, y_pos, z_pos)
+    # seam_array = multi_res_seam_calculation(distance_map, res_index=1, upscale_factor=2, dilation_amount=1)
+    print(f"Time taken to calculate seam: {time.time() - stime:.2f} seconds")
 
     # Convert the boundary vertices to a 3D array
     # seam_array = boundary_vertices_to_array_masked(boundary_array, distance_map.shape, 'x', x_pos, y_pos, z_pos)
@@ -215,7 +223,7 @@ def process_structures(nrrd_path, output_path, sk=False):
     stime = time.time()
     # data = data == 1
     # thinned_data = create_label_distance_map(data)
-    thinned_data = process_single_label(data, 1, output_path)
+    thinned_data = process_single_label(data, 6, output_path)
     print(f"Time taken: {time.time() - stime:.2f} seconds")
     # if sk:
     #     # thinned_data = skeletonize_3d_multi_label_slice(data)

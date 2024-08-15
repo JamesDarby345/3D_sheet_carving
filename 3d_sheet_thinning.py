@@ -161,7 +161,7 @@ def prepare_distance_map(distance_map, roi_mask, value_to_add=0):
     distance_map[roi_mask == -1] = -1
     return distance_map
 
-def process_single_label(label_data, label_value, output_path):
+def process_single_label(label_data, label_value, output_path, fill_holes=False):
     # Create a binary mask for the specified label
     mask = (label_data == label_value)
     # nrrd.write('mask.nrrd', mask.astype(np.uint8))
@@ -169,7 +169,7 @@ def process_single_label(label_data, label_value, output_path):
     stime = time.time()
     # distance_map = process_array_with_bounding_box(distance_map)
     roi_mask = generate_volume_roi(mask, erode_dilate_iters=10)
-    nrrd.write('roi_mask.nrrd', roi_mask.astype(np.uint8))
+    nrrd.write('output/roi_mask.nrrd', roi_mask.astype(np.uint8))
     print(f"Time taken to process ROI: {time.time() - stime:.2f} seconds")
 
     # Compute the distance map within the label
@@ -184,7 +184,8 @@ def process_single_label(label_data, label_value, output_path):
     print("0's in dist map (should be 0):", np.sum(distance_map == 0))
 
     # # Mask out areas outside the label
-    distance_map[~mask] = -1
+    if not fill_holes:
+        distance_map[~mask] = -1
     nrrd.write('output/distance_map.nrrd', distance_map.astype(np.float32))
 
     # distance_map = coarsen_image(distance_map, 1)
@@ -193,8 +194,8 @@ def process_single_label(label_data, label_value, output_path):
     stime = time.time()
     weight_array = [-1]
     # directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_6_connect(distance_map, weight_array=weight_array)
-    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask_non_monotonic(distance_map, weight_array=weight_array)
-    # directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(distance_map)
+    # directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask_non_monotonic(distance_map, weight_array=weight_array)
+    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(distance_map)
     print(f"Time taken to create energy graph: {time.time() - stime:.2f} seconds")
 
     # Calculate the seam
@@ -211,32 +212,39 @@ def process_single_label(label_data, label_value, output_path):
 
     return seam_array
 
-def process_structures(nrrd_path, output_path, sk=False):
+def process_structures(nrrd_path, output_path, pad_to_remove_edge_effects=True, fill_holes=False):
     # print(skimage.__version__)
     # Load the data
     data, header = nrrd.read(nrrd_path)
     # data = filter_and_reassign_labels(data, 300)  # Filter out small disconnected components
+    label_val = 6
+    mask = data == label_val
+    data[mask != 1] = 0
 
-    # Prepare a new array to store all thinned structures
+    if pad_to_remove_edge_effects:
+        pad_amount = 10 #similar to erode dilate iterations value
+        data = np.pad(data, pad_amount, mode='constant', constant_values=0)
+        
+        data = connect_to_edge_3d(data, label_val, pad_amount+1, use_z=True, create_outline=True)
+        nrrd.write('output/padded_data.nrrd', data.astype(np.uint8))
     thinned_data = np.zeros_like(data, dtype=np.uint8)  # Ensure thinned_data is of type uint8
-
-    stime = time.time()
-    # data = data == 1
-    # thinned_data = create_label_distance_map(data)
-    thinned_data = process_single_label(data, 6, output_path)
-    print(f"Time taken: {time.time() - stime:.2f} seconds")
-    # if sk:
-    #     # thinned_data = skeletonize_3d_multi_label_slice(data)
-    #     data = data == 1
-    #     thinned_data = skeletonize(data, method='lee', surface=True)
-    # else:
     
-    #     # Process each structure
-    #     for i in range(1, data.max() + 1):
-    #         print(f"Processing structure {i}")
-    #         thinned_data += apply_pca_thinning(data, i).astype(np.uint8)  # Explicit conversion to uint8
+    stime = time.time()
+    fill_holes = True
+    thinned_data = process_single_label(data, label_val, output_path, fill_holes=fill_holes)
+    print(f"Time taken: {time.time() - stime:.2f} seconds")
+    nrrd.write('output/thinned_data_padded.nrrd', thinned_data.astype(np.uint8))
+
+    if pad_to_remove_edge_effects:
+        pad_amount +=1
+        thinned_data = thinned_data[pad_amount:-pad_amount, pad_amount:-pad_amount, pad_amount:-pad_amount]
+        np.pad(thinned_data, pad_amount, mode='constant', constant_values=0)
+
     
     # Save the thinned structures as a new NRRD file
+    # space_origin = header['space origin']
+    # space_origin += pad_amount
+    # header['space origin'] = space_origin
     nrrd.write(output_path, thinned_data.astype(np.uint8), header)
 
 # Example usage:

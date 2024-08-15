@@ -21,6 +21,115 @@ from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
 from scipy import ndimage
 
+def create_outline_with_ray_projection(array, value, distance):
+    """
+    Create an outline by projecting rays from each edge and counting intersections with the label.
+    
+    Args:
+    array (numpy.ndarray): 3D input array
+    value (int or float): The label value to check for and fill with
+    distance (int): Distance from the edge to project rays
+    
+    Returns:
+    numpy.ndarray: 3D array with the filled outline
+    """
+    
+    depth, height, width = array.shape
+    temp_count = np.zeros_like(array, dtype=int)
+    
+    # Helper function to project rays and count intersections
+    def project_rays(slice_2d, axis):
+        nonlocal temp_count
+        for i in range(slice_2d.shape[0]):
+            for j in range(slice_2d.shape[1]):
+                if slice_2d[i, j] == value:
+                    if axis == 0:
+                        temp_count[0:distance+1, i, j] += 1
+                        temp_count[depth-distance-1:depth, i, j] += 1
+                    elif axis == 1:
+                        temp_count[i, 0:distance+1, j] += 1
+                        temp_count[i, height-distance-1:height, j] += 1
+                    else:
+                        temp_count[i, j, 0:distance+1] += 1
+                        temp_count[i, j, width-distance-1:width] += 1
+    
+    # Project rays from each face
+    project_rays(array[distance], 0)  # Front face
+    project_rays(array[-distance], 0)  # Back face
+    project_rays(array[:, distance, :], 1)  # Left face
+    project_rays(array[:, -distance, :], 1)  # Right face
+    project_rays(array[:, :, distance], 2)  # Top face
+    project_rays(array[:, :, -distance], 2)  # Bottom face
+    
+    # Create the final outline
+    result = np.copy(array)
+    result[temp_count >= 2] = value
+    
+    return result
+
+def connect_to_edge_3d(array, value, distance=1, use_x=True, use_y=True, use_z=True, create_outline=False):
+    """
+    Connect values in a 3D array to the nearest edge using straight lines,
+    if they are within the specified distance from the edge.
+    When an axis is disabled, vertices closest to that axis are not connected.
+    Optionally creates an outline using ray projection method.
+    
+    Args:
+    array (numpy.ndarray): 3D input array
+    value (int or float): The value to connect to the edge
+    distance (int): Maximum distance from the edge to connect (default 1)
+    use_x (bool): Whether to allow connections along the x-axis (default True)
+    use_y (bool): Whether to allow connections along the y-axis (default True)
+    use_z (bool): Whether to allow connections along the z-axis (default True)
+    create_outline (bool): Whether to create the outline using ray projection (default False)
+    
+    Returns:
+    numpy.ndarray: Modified 3D array with values connected to the edge and optional outline
+    """
+    # Create a copy of the input array
+    result = np.copy(array)
+    
+    # Get the dimensions of the array
+    depth, height, width = array.shape
+    
+    # Find coordinates of voxels with the specified value
+    coords = np.argwhere(array == value)
+    
+    for z, y, x in coords:
+        # Check if the voxel is within the specified distance from any edge
+        if (z < distance or z >= depth - distance or
+            y < distance or y >= height - distance or
+            x < distance or x >= width - distance):
+            
+            # Determine the nearest edge for each dimension
+            nearest_z = min(z, depth - 1 - z) if use_z else float('inf')
+            nearest_y = min(y, height - 1 - y) if use_y else float('inf')
+            nearest_x = min(x, width - 1 - x) if use_x else float('inf')
+            
+            # Find the dimension with the minimum distance to edge
+            min_dist = min(nearest_z, nearest_y, nearest_x)
+            
+            # Only connect if the nearest edge is on an enabled axis
+            if min_dist != float('inf'):
+                if min_dist == nearest_z:
+                    # Connect to the nearest z-edge
+                    z_edge = 0 if z < depth // 2 else depth - 1
+                    result[min(z, z_edge):max(z, z_edge)+1, y, x] = value
+                elif min_dist == nearest_y:
+                    # Connect to the nearest y-edge
+                    y_edge = 0 if y < height // 2 else height - 1
+                    result[z, min(y, y_edge):max(y, y_edge)+1, x] = value
+                elif min_dist == nearest_x:
+                    # Connect to the nearest x-edge
+                    x_edge = 0 if x < width // 2 else width - 1
+                    result[z, y, min(x, x_edge):max(x, x_edge)+1] = value
+    
+    # Create outline if requested
+    if create_outline:
+        result = create_outline_with_ray_projection(result, value, distance)
+    
+    return result
+
 def generate_volume_roi(input_array, erode_dilate_iters=5):
     """
     Generates a Region of Interest (ROI) for a 3D volume by dilating the non-zero structure,
@@ -52,9 +161,10 @@ def generate_volume_roi(input_array, erode_dilate_iters=5):
 
     result = np.zeros_like(input_array, dtype=np.uint8)
     
-    erode_dilate_iters = erode_dilate_iters
+    # dilate_iters = erode_dilate_iters -1
     
     eroded_padded_structure = ndimage.binary_erosion(filled_mask, iterations=erode_dilate_iters)
+
     eroded_structure = eroded_padded_structure[
         erode_dilate_iters:-erode_dilate_iters,
         erode_dilate_iters:-erode_dilate_iters,

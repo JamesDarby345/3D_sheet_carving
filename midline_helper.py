@@ -66,6 +66,7 @@ def create_outline_with_ray_projection(array, value, distance):
     result[temp_count >= 2] = value
     
     return result
+    
 
 def connect_to_edge_3d(array, value, distance=1, use_x=True, use_y=True, use_z=True, create_outline=False):
     """

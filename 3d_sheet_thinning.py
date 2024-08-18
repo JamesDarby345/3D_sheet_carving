@@ -334,16 +334,10 @@ def bresenham_3d(x1, y1, z1, x2, y2, z2):
 
 
 def fill_line(holes_3d, col, start, stop):
-    print(f"    Start = {start}, Stop = {stop}")
-
     top_z = np.argmax(holes_3d[col, start, :])
     bottom_z = np.argmax(holes_3d[col, stop, :])
-    
-    print(f"      top z: {top_z}, bottom z: {bottom_z}")
-    print(f"      Range Y: {stop - start}, Range Z: {bottom_z - top_z}")
 
     for x, y, z in bresenham_3d(col, start, top_z, col, stop, bottom_z):
-        print(f"      Filling ({x}, {y}, {z})")
         holes_3d[x, y, z] = 2
 
 def create_3d_array(holes_2d, border_voxels):
@@ -352,8 +346,7 @@ def create_3d_array(holes_2d, border_voxels):
     
     # Create an empty 3D array with the same x,y,z dimension as holes_2d
     holes_3d = np.zeros((height, width, width))
-    
-    border_voxel_dict = {(x, y): z for x, y, z in border_voxels}
+
     # Assign border voxels in the 3D array
     for x, y, z in border_voxels:
         holes_3d[x, y, z] = 1 
@@ -366,37 +359,14 @@ def create_3d_array(holes_2d, border_voxels):
         component_mask = labeled_array == component
         component_array = holes_2d * component_mask
         
-        # print(f"Connected Component {component}:")
-        
         # Iterate through each column, col is y val, segments start/stop is x val
         for col in range(component_array.shape[0]):
             column = component_array[col]
-            # print(f"  Column {col}: {column}")
             segments = find_segments(column)
             
             if segments:
-                
-                print(f"  Column {col}:")
                 for start, stop in segments:
-                    # print(f"    Start = {start}, Stop = {stop}")
-
-                    # # top_z = border_voxel_dict.get(col, start)
-                    # top_z = np.argmax(holes_3d[col, start, :])
-                    # # bottom_z = border_voxel_dict.get(col, stop)
-                    # bottom_z = np.argmax(holes_3d[col, stop, :])
-                    # range_z = bottom_z - top_z + 1
-                    # range_y = stop - start + 1
-                    # step = range_z//range_y
-                    # print(f"      top z: {top_z}, bottom z: {bottom_z}")
-                    # print(f"      Range Z: {range_z}, Range Y: {range_y}, Step: {step}")
-                    # for i in range(range_y):
-                    #     print(f"      Filling ({col}, {start+i}, {top_z + i*step})")
-                    #     holes_3d[col, start+i, top_z + i*step] = 2
                     fill_line(holes_3d, col, start, stop)
-                    
-            
-        
-        # print()  # Empty line for readability
 
     return holes_3d
 

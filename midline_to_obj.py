@@ -5,7 +5,82 @@ import trimesh
 import pyvista as pv
 from scipy.spatial import cKDTree
 
-def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterations=0):
+def pyvista_to_trimesh(pv_mesh):
+    """
+    Convert a PyVista mesh to a Trimesh object, preserving UV coordinates.
+    
+    Parameters:
+    pv_mesh (pyvista.PolyData): The input PyVista mesh.
+    
+    Returns:
+    trimesh.Trimesh: The converted Trimesh object.
+    """
+    vertices = pv_mesh.points
+    faces = pv_mesh.faces.reshape(-1, 4)[:, 1:4]
+    
+    # Create the Trimesh object
+    tm_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    
+    # Add UV coordinates if they exist
+    if 'UV' in pv_mesh.point_data:
+        uv_coords = pv_mesh.point_data['UV']
+        tm_mesh.visual = trimesh.visual.TextureVisuals(uv=uv_coords)
+    
+    return tm_mesh
+
+def add_uv_mapping(mesh):
+    """
+    Add UV coordinates to the mesh using a simple planar projection.
+    
+    Parameters:
+    mesh (pyvista.PolyData): The input mesh.
+    
+    Returns:
+    pyvista.PolyData: The mesh with UV coordinates added.
+    """
+    # Get the mesh points
+    points = mesh.points
+    
+    # Normalize X and Y coordinates to [0, 1] range for UV mapping
+    min_xy = np.min(points[:, :2], axis=0)
+    max_xy = np.max(points[:, :2], axis=0)
+    uv_coords = (points[:, :2] - min_xy) / (max_xy - min_xy)
+    
+    # Add the UV coordinates to the mesh
+    mesh.point_data['UV'] = uv_coords
+    
+    print("Added UV mapping to the mesh.")
+    return mesh
+
+def filter_disconnected_parts(mesh, min_vertices):
+    """
+    Filter out disconnected parts of the mesh with fewer than min_vertices.
+    
+    Parameters:
+    mesh (pyvista.PolyData): The input mesh.
+    min_vertices (int): The minimum number of vertices a part should have to be kept.
+    
+    Returns:
+    pyvista.PolyData: The filtered mesh.
+    """
+    # Get connected regions
+    labeled = mesh.connectivity(largest=False)
+    
+    # Count vertices in each region
+    unique_labels, counts = np.unique(labeled.cell_data['RegionId'], return_counts=True)
+    
+    # Create a mask for regions to keep
+    keep_mask = np.isin(labeled.cell_data['RegionId'], unique_labels[counts >= min_vertices])
+    
+    # Extract the kept regions
+    filtered_mesh = labeled.extract_cells(keep_mask)
+    
+    print(f"Filtered out {len(unique_labels) - np.sum(counts >= min_vertices)} disconnected parts")
+    print(f"Remaining parts: {np.sum(counts >= min_vertices)}")
+    
+    return filtered_mesh
+
+def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterations=0, min_vertices=1000):
     """
     Convert a 3D numpy array to a thin sheet-like mesh file, connecting only nearby voxels.
     
@@ -26,6 +101,9 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     vertices = indices.astype(float)
     print(f"Found {len(vertices)} non-zero elements.")
     
+    if len(vertices) <= 1:
+        print("Not enough points to create a mesh, skipping.")
+        return None
     # Create a KD-tree for efficient nearest neighbor search
     tree = cKDTree(vertices)
     
@@ -39,17 +117,47 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     mesh = pv.PolyData(vertices, lines=edges)
     
     # Convert lines to surface
-    surf = mesh.delaunay_2d()
+    surf = mesh.delaunay_2d(alpha=max_distance)
     
     print(f"Created surface with {surf.n_points} points and {surf.n_cells} cells.")
+
+    # Filter out disconnected parts
+    surf = filter_disconnected_parts(surf, min_vertices=min_vertices)
+
+    if surf.n_points == 0:
+        print("No points left after filtering, skipping mesh creation.")
+        return None
     
+    print(f"After filtering: surface has {surf.n_points} points and {surf.n_cells} cells.")
+
+    surf = surf.delaunay_2d(alpha=max_distance*3)
     # Apply smoothing if requested
     if smoothing_iterations > 0:
         surf = surf.smooth(n_iter=smoothing_iterations)
+
+    surf = add_uv_mapping(surf)
+    
+     # Convert to Trimesh
+    tm_mesh = pyvista_to_trimesh(surf)
     
     # Save as OBJ
-    # surf.save(filename)
-    # print(f"OBJ file '{filename}' has been created.")
+    
+    with open(filename, 'w') as f:
+        f.write("# OBJ file\n")
+        for v in tm_mesh.vertices:
+            f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+        
+        if tm_mesh.visual.uv is not None:
+            for uv in tm_mesh.visual.uv:
+                f.write(f"vt {uv[0]} {uv[1]}\n")
+            
+            for face in tm_mesh.faces:
+                f.write(f"f {face[0]+1}/{face[0]+1} {face[1]+1}/{face[1]+1} {face[2]+1}/{face[2]+1}\n")
+        else:
+            for face in tm_mesh.faces:
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+    
+    print(f"OBJ file '{filename}' has been created.")
     
     return surf
 
@@ -67,11 +175,27 @@ def visualize_mesh(mesh):
     plotter.show_axes()
     plotter.show()
 
+def midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=None, max_distance=1.5, smoothing_iterations=0, min_vertices=1000):
+    original_array, _ = nrrd.read(input_nrrd_path)
+    os.makedirs(os.path.dirname(output_obj_path), exist_ok=True)
+    if not array_values:
+        array_values = np.unique(original_array)
+    for value in array_values:
+        print(f"Processing value {value}...")
+        if value == 0:
+            continue
+        if np.sum(original_array == value) == 0:
+            print(f"Value {value} not found in the input array, skipping.")
+            continue
+        array = original_array.copy()
+        array[original_array!=value] = 0
+        temp_output_obj_path = f'{output_obj_path}_{value}.obj'
+        mesh = array_to_thin_sheet_obj(array, temp_output_obj_path, max_distance=max_distance, smoothing_iterations=smoothing_iterations, min_vertices=min_vertices)
+        # visualize_mesh(mesh)
+
 current_directory = os.getcwd()
 input_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'
-output_obj_path = f'{current_directory}/output/09936_03280_04560_thin_sheet.obj'
+output_obj_path = f'{current_directory}/output/objs/09936_03280_04560_thin_sheet'
+array_values = []
 
-array, _ = nrrd.read(input_nrrd_path)
-array[array!=6] = 0
-mesh = array_to_thin_sheet_obj(array, output_obj_path, max_distance=1.8, smoothing_iterations=1)
-visualize_mesh(mesh)
+midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=array_values, max_distance=1.5, smoothing_iterations=0, min_vertices=500)

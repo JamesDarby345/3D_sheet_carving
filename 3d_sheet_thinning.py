@@ -11,6 +11,9 @@ import concurrent.futures
 from midline_helper import *
 import graph_tool.all as gt
 
+from skimage import measure
+import pyvista as pv
+
 def calculate_seam_iter(directed_graph, src, tgt, weights, test_size, x_pos, y_pos, z_pos):
     # Compute the residual capacity of the edges
     res = gt.boykov_kolmogorov_max_flow(directed_graph, src, tgt, weights)
@@ -420,12 +423,18 @@ def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_grap
     
     nrrd.write(output_path, midline_labels.astype(np.uint8), header)
 
+    return midline_labels
+
 # Example usage:
 if __name__ == '__main__':
     current_directory = os.getcwd()
     input_nrrd_path = f'{current_directory}/data/label/09936_03280_04560_zyx_256_chunk_s1_vol_label.nrrd'  # Path to your NRRD file
     output_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'  # Path where the output will be saved
-    label_values = []  # List of label values to process, pass None or empty list to process all labels
+    label_values = [6]  # List of label values to process, pass None or empty list to process all labels
     os_time = time.time()
-    process_structures(input_nrrd_path, output_nrrd_path, pad_amount=10, use_monotonic_graph=True, fill_holes=False, label_values=label_values)
+    midline_label = process_structures(input_nrrd_path, output_nrrd_path, pad_amount=10, use_monotonic_graph=True, fill_holes=False, label_values=label_values)
     print(f"Total time taken: {time.time() - os_time:.2f} seconds")
+
+
+
+

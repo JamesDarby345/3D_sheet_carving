@@ -131,7 +131,7 @@ def connect_to_edge_3d(array, value, distance=1, use_x=True, use_y=True, use_z=T
     
     return result
 
-def generate_volume_roi(input_array, erode_dilate_iters=5):
+def generate_volume_roi(input_array, erode_dilate_iters=10):
     """
     Generates a Region of Interest (ROI) for a 3D volume by dilating the non-zero structure,
     filling morphological tunnels, and creating a mask that closely covers the volume.

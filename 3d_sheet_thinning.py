@@ -20,7 +20,7 @@ def calculate_seam_iter(directed_graph, src, tgt, weights, test_size, x_pos, y_p
     part = gt.min_st_cut(directed_graph, src, weights, res)
     # Find the boundary vertices
     boundary_vertices = find_boundary_vertices(np.array(directed_graph.get_edges()), part)
-    print(f"Number of boundary vertices: {len(boundary_vertices)}, Number of vertices: {len(directed_graph.get_vertices())}")
+    # print(f"Number of boundary vertices: {len(boundary_vertices)}, Number of vertices: {len(directed_graph.get_vertices())}")
     shape = (test_size, test_size, test_size)
     # Convert the boundary vertices to a 3D array
     boundary_array = boundary_vertices_to_array_masked(boundary_vertices, shape, 'x', x_pos, y_pos, z_pos)
@@ -171,7 +171,7 @@ def process_single_label(label_data, label_value, output_path, fill_holes=False)
         stime = time.time()
         # distance_map = process_array_with_bounding_box(distance_map)
         roi_mask = generate_volume_roi(mask, erode_dilate_iters=10)
-        nrrd.write('output/roi_mask.nrrd', roi_mask.astype(np.uint8))
+        # nrrd.write('output/roi_mask.nrrd', roi_mask.astype(np.uint8))
         print(f"Time taken to process ROI: {time.time() - stime:.2f} seconds")
     else:
         roi_mask = mask
@@ -183,12 +183,11 @@ def process_single_label(label_data, label_value, output_path, fill_holes=False)
 
     #Mask out areas outside the ROI, normalize the distance map and remask
     distance_map = prepare_distance_map(distance_map, roi_mask, value_to_add=0)
-    print("0's in dist map (should be 0):", np.sum(distance_map == 0))
 
     # # Mask out areas outside the label
     if not fill_holes:
         distance_map[~mask] = -1
-    nrrd.write('output/distance_map.nrrd', distance_map.astype(np.float32))
+    # nrrd.write('output/distance_map.nrrd', distance_map.astype(np.float32))
 
   
     # Create the energy graph
@@ -211,7 +210,7 @@ def process_single_label(label_data, label_value, output_path, fill_holes=False)
     # seam_array = boundary_vertices_to_array_masked(boundary_array, distance_map.shape, 'x', x_pos, y_pos, z_pos)
 
     # Save the seam array as an NRRD file
-    nrrd.write(output_path, seam_array.astype(np.uint8))
+    # nrrd.write(output_path, seam_array.astype(np.uint8))
 
     return seam_array
 
@@ -239,26 +238,6 @@ def get_border_voxels(structure_3d, holes_2d):
                     if len(z_values) > 1:
                         border_voxels.append((x, y, z_values[-1]))
     return border_voxels
-
-def create_border_structure(structure_3d, border_voxels):
-    border_structure = np.zeros((structure_3d.shape[0], structure_3d.shape[1], structure_3d.shape[2]))
-    d_borders = np.zeros((structure_3d.shape[0], structure_3d.shape[1]))
-    for x, y, z in border_voxels:
-        # print(x, y, z)
-        border_structure[x, y, z] = 1
-        d_borders[x,y] = 1
-    return border_structure, d_borders
-
-def fill_holes(structure_3d, border_voxels):
-    filled_structure = structure_3d.copy()
-    for x, y, _ in border_voxels:
-        z_values = np.where(structure_3d[x, y, :])[0]
-        if len(z_values) >= 2:
-            z_min, z_max = z_values[0], z_values[-1]
-            filled_structure[x, y, z_min:z_max+1] = 1
-        elif len(z_values) == 1:
-            filled_structure[x, y, z_values[0]] = 1
-    return filled_structure
 
 def find_segments(column):
     # Convert to integers for diff operation
@@ -338,7 +317,7 @@ def fill_line(holes_3d, col, start, stop):
     bottom_z = np.argmax(holes_3d[col, stop, :])
 
     for x, y, z in bresenham_3d(col, start, top_z, col, stop, bottom_z):
-        holes_3d[x, y, z] = 2
+        holes_3d[x, y, z] = 1
 
 def create_3d_array(holes_2d, border_voxels):
     # Assuming holes_2d is a 2D NumPy array
@@ -370,76 +349,83 @@ def create_3d_array(holes_2d, border_voxels):
 
     return holes_3d
 
-def process_3d_structure(structure_3d):
+def fill_holes_3d_structure(structure_3d):
     # Collapse to 2D
-    print(f'Structure shape: {structure_3d.shape}', np.sum(structure_3d))
+    # print(f'Structure shape: {structure_3d.shape}', np.sum(structure_3d))
     structure_2d = collapse_to_2d(structure_3d)
     
     # Identify holes
     holes_2d = identify_morphological_holes(structure_2d)
-    nrrd.write('output/holes_2d.nrrd', holes_2d.astype(np.uint8))
     
     # Get border voxels
     border_voxels = get_border_voxels(structure_3d, holes_2d)
-    print(f'Number of border voxels: {len(border_voxels)}') 
-    print(f'Border voxels 1st value: {border_voxels[0]}')
-    
-    # Create border structure
-    border_structure, border_2d = create_border_structure(structure_3d, border_voxels)
-    print(f'Border structure shape: {border_structure.shape}', np.sum(border_structure))
-    nrrd.write('2d_border.nrrd', border_2d.astype(np.uint8))
-    
-    # Save border structure as NRRD
-    nrrd.write('output/hole_borders.nrrd', border_structure.astype(np.uint8))
+    # print(f'Number of border voxels: {len(border_voxels)}') 
+    # print(f'Border voxels 1st value: {border_voxels[0]}')
 
-    # Create 3D array
-    holes_3d = create_3d_array(holes_2d, border_voxels)
-    nrrd.write('output/filled_holes_3d.nrrd', holes_3d.astype(np.uint8))
+    # Create 3D array of filled holes
+    filled_holes_3d = create_3d_array(holes_2d, border_voxels)
+    filled_holes_3d += structure_3d
+
+    return filled_holes_3d
+
+def process_single_label_wrapper(args):
+    data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount = args
+    thinned_data = process_single_label(data, label_val, output_path, fill_holes=use_monotonic_graph)
     
-    # Fill holes
-    filled_structure = fill_holes(structure_3d, border_voxels)
-    print(f'Filled structure shape: {filled_structure.shape}', np.sum(filled_structure))
-    return filled_structure
-
-def process_structures(nrrd_path, output_path, pad_to_remove_edge_effects=True, fill_holes=False):
-    # print(skimage.__version__)
-    # Load the data
-    data, header = nrrd.read(nrrd_path)
-    # data = filter_and_reassign_labels(data, 300)  # Filter out small disconnected components
-    label_val = 6
-    mask = data == label_val
-    data[mask != 1] = 0
-
-    if pad_to_remove_edge_effects:
-        pad_amount = 10 #similar to erode dilate iterations value
-        data = np.pad(data, pad_amount, mode='constant', constant_values=0)
-        
-        #TODO: use adjacent labels to inform the connection instead of straight projection to edge
-        data = connect_to_edge_3d(data, label_val, pad_amount+1, use_z=True, create_outline=False)
-        nrrd.write('output/padded_data.nrrd', data.astype(np.uint8))
-    thinned_data = np.zeros_like(data, dtype=np.uint8)  # Ensure thinned_data is of type uint8
-    
-    stime = time.time()
-    thinned_data = process_single_label(data, label_val, output_path, fill_holes=fill_holes)
-    print(f"Time taken: {time.time() - stime:.2f} seconds")
-    nrrd.write('output/thinned_data_padded.nrrd', thinned_data.astype(np.uint8))
-
-    if pad_to_remove_edge_effects:
-        pad_amount +=1
-        print(f"Thinned data shape: {thinned_data.shape}")
+    if pad_amount:
+        pad_amount += 1
         thinned_data = thinned_data[pad_amount:-pad_amount, pad_amount:-pad_amount, pad_amount:-pad_amount]
         thinned_data = np.pad(thinned_data, 1, mode='constant', constant_values=0)
-        print(f"Thinned data shape post padding: {thinned_data.shape}")
+    
+    if fill_holes and not use_monotonic_graph:
+        thinned_data = fill_holes_3d_structure(thinned_data)
+    
+    thinned_data[thinned_data != 0] = label_val
+    return thinned_data
 
-    thinned_data = process_3d_structure(thinned_data)
-    # Save the thinned structures as a new NRRD file
-    # space_origin = header['space origin']
-    # space_origin += pad_amount
-    # header['space origin'] = space_origin
-    nrrd.write(output_path, thinned_data.astype(np.uint8), header)
+def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_graph=False, fill_holes=False, label_values=None):
+    original_data, header = nrrd.read(nrrd_path)
+    midline_labels = np.zeros_like(original_data, dtype=np.uint8)
+    
+    if label_values:
+        unique_labels = label_values
+    else:
+        unique_labels = np.unique(original_data)
+        unique_labels = unique_labels[unique_labels != 0]  # Exclude background label
+    
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = []
+        for label_val in unique_labels:
+            data = original_data.copy()
+            mask = data == label_val
+            data[mask != 1] = 0
+            
+            if np.sum(mask) == 0:
+                continue
+            
+            if pad_amount:
+                data = np.pad(data, pad_amount, mode='constant', constant_values=0)
+                data = connect_to_edge_3d(data, label_val, pad_amount+1, use_z=True, create_outline=False)
+            
+            args = (data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount)
+            futures.append(executor.submit(process_single_label_wrapper, args))
+        
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                thinned_data = future.result()
+                
+                midline_labels += thinned_data.astype(np.uint8)
+            except Exception as exc:
+                print(f'A label generated an exception: {exc}')
+    
+    nrrd.write(output_path, midline_labels.astype(np.uint8), header)
 
 # Example usage:
-current_directory = os.getcwd()
-input_nrrd_path = f'{current_directory}/data/label/09936_03280_04560_zyx_256_chunk_s1_vol_label.nrrd'  # Path to your NRRD file
-output_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'  # Path where the output will be saved
-process_structures(input_nrrd_path, output_nrrd_path, fill_holes=False)
+if __name__ == '__main__':
+    current_directory = os.getcwd()
+    input_nrrd_path = f'{current_directory}/data/label/09936_03280_04560_zyx_256_chunk_s1_vol_label.nrrd'  # Path to your NRRD file
+    output_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'  # Path where the output will be saved
+    label_values = []  # List of label values to process, pass None or empty list to process all labels
+    os_time = time.time()
+    process_structures(input_nrrd_path, output_nrrd_path, pad_amount=10, use_monotonic_graph=True, fill_holes=False, label_values=label_values)
+    print(f"Total time taken: {time.time() - os_time:.2f} seconds")

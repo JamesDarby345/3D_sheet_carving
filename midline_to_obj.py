@@ -4,6 +4,7 @@ import os
 import trimesh
 import pyvista as pv
 from scipy.spatial import cKDTree
+import multiprocessing
 
 def pyvista_to_trimesh(pv_mesh):
     """
@@ -80,7 +81,7 @@ def filter_disconnected_parts(mesh, min_vertices):
     
     return filtered_mesh
 
-def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterations=0, min_vertices=1000):
+def array_to_thin_sheet_obj(array, filename, max_distance=1.8, min_vertices=1000):
     """
     Convert a 3D numpy array to a thin sheet-like mesh file, connecting only nearby voxels.
     
@@ -88,7 +89,7 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     array (numpy.ndarray): 3D numpy array representing the structure.
     filename (str): Name of the output file.
     max_distance (float): Maximum distance for connecting voxels.
-    smoothing_iterations (int): Number of smoothing iterations to apply.
+    min_vertices (int): Minimum number of vertices for a disconnected part to be kept.
     
     Returns:
     pyvista.PolyData: The resulting mesh.
@@ -104,6 +105,7 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     if len(vertices) <= 1:
         print("Not enough points to create a mesh, skipping.")
         return None
+
     # Create a KD-tree for efficient nearest neighbor search
     tree = cKDTree(vertices)
     
@@ -131,17 +133,13 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     print(f"After filtering: surface has {surf.n_points} points and {surf.n_cells} cells.")
 
     surf = surf.delaunay_2d(alpha=max_distance*3)
-    # Apply smoothing if requested
-    if smoothing_iterations > 0:
-        surf = surf.smooth(n_iter=smoothing_iterations)
 
     surf = add_uv_mapping(surf)
     
-     # Convert to Trimesh
+    # Convert to Trimesh
     tm_mesh = pyvista_to_trimesh(surf)
     
     # Save as OBJ
-    
     with open(filename, 'w') as f:
         f.write("# OBJ file\n")
         for v in tm_mesh.vertices:
@@ -161,41 +159,36 @@ def array_to_thin_sheet_obj(array, filename, max_distance=1.8, smoothing_iterati
     
     return surf
 
-def visualize_mesh(mesh):
-    """
-    Visualize the mesh using PyVista.
+def process_single_value(args):
+    value, original_array, output_obj_path, max_distance, min_vertices = args
+    print(f"Processing value {value}...")
+    if np.sum(original_array == value) == 0:
+        print(f"Value {value} not found in the input array, skipping.")
+        return
+    array = original_array.copy()
+    array[original_array!=value] = 0
+    temp_output_obj_path = f'{output_obj_path}_{value}.obj'
+    mesh = array_to_thin_sheet_obj(array, temp_output_obj_path, max_distance=max_distance, min_vertices=min_vertices)
 
-    Parameters:
-    mesh (pyvista.PolyData): The mesh to visualize.
-    """
-    print("Visualizing mesh...")
-    plotter = pv.Plotter()
-    plotter.add_mesh(mesh, color='red', show_edges=True, opacity=0.7)
-    plotter.add_points(mesh.points, color='blue', point_size=5)
-    plotter.show_axes()
-    plotter.show()
-
-def midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=None, max_distance=1.5, smoothing_iterations=0, min_vertices=1000):
+def midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=None, max_distance=1.5, min_vertices=1000):
     original_array, _ = nrrd.read(input_nrrd_path)
     os.makedirs(os.path.dirname(output_obj_path), exist_ok=True)
     if not array_values:
         array_values = np.unique(original_array)
-    for value in array_values:
-        print(f"Processing value {value}...")
-        if value == 0:
-            continue
-        if np.sum(original_array == value) == 0:
-            print(f"Value {value} not found in the input array, skipping.")
-            continue
-        array = original_array.copy()
-        array[original_array!=value] = 0
-        temp_output_obj_path = f'{output_obj_path}_{value}.obj'
-        mesh = array_to_thin_sheet_obj(array, temp_output_obj_path, max_distance=max_distance, smoothing_iterations=smoothing_iterations, min_vertices=min_vertices)
-        # visualize_mesh(mesh)
+    array_values = [v for v in array_values if v != 0]
+    
+    # Prepare arguments for multiprocessing
+    args_list = [(value, original_array, output_obj_path, max_distance, min_vertices) for value in array_values]
+    
+    # Use multiprocessing to process label values in parallel
+    with multiprocessing.Pool() as pool:
+        pool.map(process_single_value, args_list)
 
-current_directory = os.getcwd()
-input_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'
-output_obj_path = f'{current_directory}/output/objs/09936_03280_04560_thin_sheet'
-array_values = []
+# Main execution
+if __name__ == "__main__":
+    current_directory = os.getcwd()
+    input_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'
+    output_obj_path = f'{current_directory}/output/objs/09936_03280_04560_thin_sheet'
+    array_values = []  # If empty, it will process all unique values in the array
 
-midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=array_values, max_distance=1.5, smoothing_iterations=0, min_vertices=500)
+    midline_labels_to_obj(input_nrrd_path, output_obj_path, array_values=array_values, max_distance=1.5, min_vertices=500)

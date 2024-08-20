@@ -29,23 +29,47 @@ def calculate_seam_iter(directed_graph, src, tgt, weights, test_size, x_pos, y_p
     boundary_array = boundary_vertices_to_array_masked(boundary_vertices, shape, 'x', x_pos, y_pos, z_pos)
     return boundary_array, flow
 
-def multi_res_seam_iter(res_index, mask_array_data, b_arr_up):
-    masked_array = mask_array_data[res_index].copy().astype(np.int16)
-    masked_array[b_arr_up == 0] = -1
-    stime = time.time()
-    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(masked_array)
-    boundary_array, flow = calculate_seam_iter(directed_graph, src, tgt, weights, masked_array.shape[0], x_pos, y_pos, z_pos)
-    return boundary_array
+def calculate_orientation(array_3d, label_value):
+    indices = np.where(array_3d == label_value)
+    coordinates = np.array(indices).T
+    pca = PCA(n_components=3)
+    pca.fit(coordinates)
+    
+    # The third principal component is perpendicular to the structure
+    perpendicular_direction = pca.components_[2]
+    
+    # Ensure the vector points towards the positive octant
+    if np.sum(perpendicular_direction) < 0:
+        perpendicular_direction = -perpendicular_direction
+    
+    return perpendicular_direction
 
-def multi_res_seam_calculation(mask_array_data, res_index=3, upscale_factor=2, dilation_amount=1):
-    directed_graph, src, tgt, weights, x_pos, y_pos, z_pos = create_masked_directed_energy_graph_from_mask(mask_array_data[res_index])
-    boundary_array, flow = calculate_seam_iter(directed_graph, src, tgt, weights, mask_array_data[res_index].shape[0], x_pos, y_pos, z_pos)
-    b_arr_up = upscale_and_dilate_3d(boundary_array, upscale_factor=2, dilation_amount=dilation_amount)
-    for i in range(res_index-1, -1, -1):
-        boundary_array = multi_res_seam_iter(i, mask_array_data, b_arr_up)
-        if i != 0:
-            b_arr_up = upscale_and_dilate_3d(boundary_array, upscale_factor=upscale_factor, dilation_amount=dilation_amount)
-    return boundary_array
+def rotate_to_z_axis(array_3d, direction_vector):
+    direction_vector = direction_vector / np.linalg.norm(direction_vector)
+    axis_vectors = np.eye(3)
+    dot_products = np.abs(np.dot(axis_vectors, direction_vector))
+    closest_axis = np.argmax(dot_products)
+    
+    if closest_axis == 2:  # Already closest to z-axis
+        return array_3d, (None, 0)
+    elif closest_axis == 1:  # y-axis
+        plane = (1, 2)  # yz-plane
+        k = 1  # 90 degree rotation
+    else:  # x-axis
+        plane = (0, 2)  # xz-plane
+        k = 1  # 90 degree rotation
+    
+    rotated_array = np.rot90(array_3d, k=k, axes=plane)
+    
+    return rotated_array, (plane, k)
+
+def unapply_rotation(array_3d, rotation_info):
+    plane, k = rotation_info
+    if plane is None:
+        return array_3d
+    
+    # Reverse the rotation by rotating in the opposite direction
+    return np.rot90(array_3d, k=-k, axes=plane)
 
 def process_label(labeled_array, label):
     # Create a binary mask for the current label
@@ -372,7 +396,7 @@ def fill_holes_3d_structure(structure_3d):
     return filled_holes_3d
 
 def process_single_label_wrapper(args):
-    data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount = args
+    data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount, rotation_info = args
     thinned_data = process_single_label(data, label_val, output_path, fill_holes=use_monotonic_graph)
     
     if pad_amount:
@@ -382,12 +406,16 @@ def process_single_label_wrapper(args):
     
     if fill_holes and not use_monotonic_graph:
         thinned_data = fill_holes_3d_structure(thinned_data)
-    
+
+    thinned_data = unapply_rotation(thinned_data, rotation_info)
     thinned_data[thinned_data != 0] = label_val
     return thinned_data
 
 def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_graph=False, fill_holes=False, label_values=None):
     original_data, header = nrrd.read(nrrd_path)
+    original_data = np.rot90(original_data, k=1, axes=(0, 2))
+    current_directory = os.getcwd()
+    nrrd.write(f'{current_directory}/output/test_rotated.nrrd', original_data, header)
     midline_labels = np.zeros_like(original_data, dtype=np.uint8)
     
     if label_values:
@@ -400,6 +428,8 @@ def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_grap
         futures = []
         for label_val in unique_labels:
             data = original_data.copy()
+            primary_label_direction = calculate_orientation(data, label_val)
+            data, rotation_info = rotate_to_z_axis(data, primary_label_direction)
             mask = data == label_val
             data[mask != 1] = 0
             
@@ -410,7 +440,7 @@ def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_grap
                 data = np.pad(data, pad_amount, mode='constant', constant_values=0)
                 data = connect_to_edge_3d(data, label_val, pad_amount+1, use_z=True, create_outline=False)
             
-            args = (data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount)
+            args = (data, label_val, output_path, use_monotonic_graph, fill_holes, pad_amount, rotation_info)
             futures.append(executor.submit(process_single_label_wrapper, args))
         
         for future in concurrent.futures.as_completed(futures):
@@ -430,11 +460,7 @@ if __name__ == '__main__':
     current_directory = os.getcwd()
     input_nrrd_path = f'{current_directory}/data/label/09936_03280_04560_zyx_256_chunk_s1_vol_label.nrrd'  # Path to your NRRD file
     output_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'  # Path where the output will be saved
-    label_values = [6]  # List of label values to process, pass None or empty list to process all labels
+    label_values = []  # List of label values to process, pass None or empty list to process all labels
     os_time = time.time()
     midline_label = process_structures(input_nrrd_path, output_nrrd_path, pad_amount=10, use_monotonic_graph=True, fill_holes=False, label_values=label_values)
     print(f"Total time taken: {time.time() - os_time:.2f} seconds")
-
-
-
-

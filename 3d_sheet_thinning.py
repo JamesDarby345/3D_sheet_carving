@@ -413,9 +413,6 @@ def process_single_label_wrapper(args):
 
 def process_structures(nrrd_path, output_path, pad_amount=10, use_monotonic_graph=False, fill_holes=False, label_values=None):
     original_data, header = nrrd.read(nrrd_path)
-    original_data = np.rot90(original_data, k=1, axes=(0, 2))
-    current_directory = os.getcwd()
-    nrrd.write(f'{current_directory}/output/test_rotated.nrrd', original_data, header)
     midline_labels = np.zeros_like(original_data, dtype=np.uint8)
     
     if label_values:
@@ -460,7 +457,7 @@ if __name__ == '__main__':
     current_directory = os.getcwd()
     input_nrrd_path = f'{current_directory}/data/label/09936_03280_04560_zyx_256_chunk_s1_vol_label.nrrd'  # Path to your NRRD file
     output_nrrd_path = f'{current_directory}/output/09936_03280_04560_zyx_256_chunk_s1_vol_label_thinned.nrrd'  # Path where the output will be saved
-    label_values = []  # List of label values to process, pass None or empty list to process all labels
+    label_values = [6,7]  # List of label values to process, pass None or empty list to process all labels
     os_time = time.time()
     midline_label = process_structures(input_nrrd_path, output_nrrd_path, pad_amount=10, use_monotonic_graph=True, fill_holes=False, label_values=label_values)
     print(f"Total time taken: {time.time() - os_time:.2f} seconds")
